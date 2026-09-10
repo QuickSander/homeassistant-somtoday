@@ -212,13 +212,28 @@ besparen:
 **Aider configuratie** (.aider.conf.yml):
 
 """yaml
+# Default model for /code (implementation, tests)
 model: deepseek/deepseek-chat
-editor-model: deepseek/deepseek-chat
+
+# Model for /architect and editor tasks (architecture, review)
+editor-model: deepseek/deepseek-reasoner
+
+# Model for commit messages and summaries
 weak-model: deepseek/deepseek-chat
+
+# Automatically commit after each change
 auto-commits: true
-auto-lint: true
+
+# Test command
 test-cmd: pytest tests/ -v
+
+# Optional: lint command (uncomment to enable)
+# lint-cmd: "python -m ruff check"
 """
+
+> **Let op**: `/ask` (review) gebruikt standaard het `model`, niet `editor-model`.
+> Wissel tijdens de sessie met `/model deepseek/deepseek-reasoner` voordat je
+> `/ask` gebruikt, of start Aider met `--model deepseek/deepseek-reasoner`.
 
 ---
 
