@@ -117,16 +117,55 @@ Voeg ook de benodigde strings.json toe voor vertalingen.
 
 **Verantwoordelijkheden**:
 - Schrijven van unit tests voor config flow
-- Uitvoeren van integratietests
+- Schrijven van unit tests voor coordinator (inclusief polling en error handling)
+- Schrijven van unit tests voor sensor entities (state, attributes, device classes)
+- Schrijven van unit tests voor de OAuth2 login flow (token refresh, expiry)
+- Uitvoeren van integratietests via de `hass` fixture
+- Meten en rapporteren van test coverage
 - Rapporteren van bevindingen in docs/test-report.md
 - Controleren van error handling scenarios
 
 **Input**: Code van engineer-agent, requirements
 **Output**: tests/ map met tests, docs/test-report.md
 
+**Test-tooling**:
+- `pytest` als test runner
+- `pytest-asyncio` voor async tests
+- `pytest-homeassistant-custom-component` voor de `hass` fixture en HA test helpers
+- `pytest-cov` voor coverage rapportage
+- Deze dependencies staan in `requirements_test.txt` (aan te maken door engineer-agent)
+
+**Teststrategie per component**:
+
+| Component | Testtype | Belangrijkste scenarios |
+|-----------|----------|-------------------------|
+| config_flow | unit | succesvolle setup, ongeldige credentials, netwerk timeout, duplicate entry |
+| coordinator | unit | succesvolle update, API error, timeout, retry gedrag |
+| sensor | unit | correcte state, attributes, device class, unavailable bij API error |
+| OAuth2 flow | unit | token refresh, token expiry, refresh failure |
+
+**Mock-afspraken**:
+- De SomToday API wordt **altijd** gemockt; tests mogen nooit de echte API aanroepen
+- Gebruik `aioresponses` of `unittest.mock` voor HTTP-mocking
+- Mock responses worden als fixtures in `tests/conftest.py` geplaatst
+- De engineer-agent levert de API-client met een injecteerbare sessie zodat deze mockbaar is
+
+**Rapport-template** (`docs/test-report.md`):
+- **Samenvatting**: aantal tests, geslaagd/gezakt, coverage percentage
+- **Testcases**: per component een tabel met testnaam, doel, resultaat
+- **Coverage**: per bestand het coverage percentage
+- **Bevindingen**: gevonden bugs of ontbrekende scenarios
+- **Blockers**: zaken die niet getest konden worden, met reden
+
 **Mag NOOIT**:
 - Productiecode aanpassen (alleen rapporteren)
 - Tests verwijderen zonder documentatie
+- De echte SomToday API aanroepen in tests
+
+**Escalatie**: escaleer naar de mens wanneer:
+- De API-documentatie onvoldoende is om een scenario te testen
+- Een test alleen kan slagen door productiecode aan te passen
+- Coverage onder 80% blijft na redelijke inspanning
 
 **Voorbeeldcommando**:
 
