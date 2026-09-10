@@ -68,14 +68,39 @@ gebruikersconfiguratie.
 
 ### Config entry data
 
+De opgeslagen data verschilt per authenticatiemethode:
+
+**Bij OAuth2 (aanbevolen)**:
+
 ```python
 {
     "username": str,
-    "password": str,          # of refresh_token bij OAuth2
+    "school": str,
+    "refresh_token": str,     # persistent, nodig voor token refresh
+    "scan_interval": int,     # in minuten, door gebruiker opgegeven
+}
+```
+
+**Bij wachtwoord-authenticatie (fallback)**:
+
+```python
+{
+    "username": str,
+    "password": str,          # persistent, nodig om tokens te vernieuwen
     "school": str,
     "scan_interval": int,     # in minuten, door gebruiker opgegeven
 }
 ```
+
+Het **access token wordt NIET persistent opgeslagen**. Dit is kortlevend en
+wordt in het geheugen van de coordinator gehouden. Alleen de refresh token
+(of het wachtwoord) wordt in de config entry bewaard.
+
+> **Beveiligingsnoot**: Home Assistant slaat config entries op in
+> `.storage/core.config_entries` als plaintext JSON. De refresh token en het
+> wachtwoord zijn dus niet versleuteld. Dit is de standaard HA-aanpak; er is
+> geen ingebouwde encrypted opslag. Beperk de bestandsrechten van `.storage/`
+> en documenteer dit richting de gebruiker.
 
 ### Options flow
 
@@ -167,10 +192,28 @@ rapporteert.
 ## 6. OAuth2 Flow
 
 1. Gebruiker voert credentials in via config flow
-2. Integratie vraagt access token aan bij `/oauth2/token`
-3. Access token + refresh token worden opgeslagen in config entry
+2. Integratie vraagt access token + refresh token aan bij `/oauth2/token`
+3. Alleen de **refresh token** wordt opgeslagen in de config entry; het
+   access token blijft in het geheugen van de coordinator
 4. Bij 401: coordinator probeert refresh via refresh token
 5. Bij refresh failure: `ConfigEntryAuthFailed` → reauth flow
+
+### Roterende refresh tokens
+
+Sommige OAuth2-providers geven bij elke refresh een **nieuwe** refresh token
+en invalideren de oude. De coordinator moet dit afhandelen door de config
+entry bij te werken:
+
+```python
+if new_refresh_token != entry.data[CONF_REFRESH_TOKEN]:
+    self.hass.config_entries.async_update_entry(
+        entry,
+        data={**entry.data, CONF_REFRESH_TOKEN: new_refresh_token},
+    )
+```
+
+Zonder deze stap werkt de integratie na de eerste refresh niet meer, omdat
+de opgeslagen refresh token dan verlopen is.
 
 ## 7. Bestandsstructuur
 
@@ -193,6 +236,7 @@ custom_components/sometoday/
 ```python
 DOMAIN = "sometoday"
 CONF_SCAN_INTERVAL = "scan_interval"
+CONF_REFRESH_TOKEN = "refresh_token"
 DEFAULT_SCAN_INTERVAL = 15  # minuten
 MIN_SCAN_INTERVAL = 5
 MAX_SCAN_INTERVAL = 1440
@@ -204,3 +248,5 @@ MAX_SCAN_INTERVAL = 1440
 - **Coordinator**: vertaalt API-fouten naar HA exceptions
 - **Entities**: worden `unavailable` bij `UpdateFailed`
 - **Reauth**: automatisch getriggerd bij auth failures
+- **Token refresh**: roterende refresh tokens worden via `async_update_entry`
+  teruggeschreven naar de config entry
