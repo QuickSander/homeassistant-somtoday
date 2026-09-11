@@ -2,6 +2,7 @@
 
 This module is deliberately free of Home Assistant imports so that the
 authentication layer can be unit tested without the Home Assistant runtime.
+The constant set follows ``docs/architecture.md`` section 10.
 """
 
 from __future__ import annotations
@@ -13,14 +14,15 @@ DOMAIN: Final = "sometoday"
 # ---------------------------------------------------------------------------
 # Config entry data keys
 # ---------------------------------------------------------------------------
-CONF_TENANT_UUID: Final = "tenant_uuid"
-CONF_SCHOOL_NAME: Final = "school_name"
-CONF_USERNAME: Final = "username"
 CONF_REFRESH_TOKEN: Final = "refresh_token"
 CONF_API_URL: Final = "api_url"
+CONF_ACCOUNT_ID: Final = "account_id"
 CONF_STUDENT_ID: Final = "student_id"
 CONF_STUDENT_NAME: Final = "student_name"
-CONF_AUTH_METHOD: Final = "auth_method"
+
+# Transient config-flow field holding the pasted redirect URL / code. Never
+# persisted in the config entry.
+CONF_REDIRECT_URL: Final = "redirect_url"
 
 # Config entry option keys
 CONF_SCAN_INTERVAL: Final = "scan_interval"
@@ -43,33 +45,25 @@ DEFAULT_API_URL: Final = "https://api.somtoday.nl"
 # ---------------------------------------------------------------------------
 # Authentication
 # ---------------------------------------------------------------------------
-AUTH_METHOD_PKCE: Final = "pkce"
-AUTH_METHOD_PASSWORD: Final = "password"
-
-# Public OAuth2 clients. No client secret is used: PKCE replaces it.
+# Public OAuth2 client. No client secret is used: PKCE replaces it, and the
+# authorize request deliberately omits ``tenant_uuid`` so SomToday shows its
+# own school picker.
 CLIENT_ID_APP: Final = "somtoday-leerling-native"
-CLIENT_ID_SSO: Final = "D50E0C06-32D1-4B41-A137-A9A850C892C2"
 
 AUTHORIZE_URL: Final = "https://inloggen.somtoday.nl/oauth2/authorize"
 TOKEN_URL: Final = "https://inloggen.somtoday.nl/oauth2/token"
-TOKEN_URL_SSO: Final = "https://somtoday.nl/oauth2/token"
-SCHOOLS_URL: Final = "https://servers.somtoday.nl/organisaties.json"
-LOGIN_BASE_URL: Final = "https://inloggen.somtoday.nl"
 REDIRECT_URI: Final = "somtoday://nl.topicus.somtoday.leerling/oauth/callback"
 
 SCOPE: Final = "openid"
 SESSION_NO_SESSION: Final = "no_session"
 TOKEN_REFRESH_MARGIN: Final = 120  # seconds before expiry to refresh
 
-# HTML form field names used by the SomToday login page.
-USERNAME_FIELD: Final = "usernameFieldPanel:usernameFieldPanel_body:usernameField"
-PASSWORD_FIELD: Final = "passwordFieldPanel:passwordFieldPanel_body:passwordField"
-
 # PKCE
 CODE_VERIFIER_LENGTH: Final = 128
-# The SomToday app uses lowercase letters and digits (without zero).
+# The SomToday app uses lowercase letters and digits (without zero). This is a
+# subset of the RFC 7636 unreserved set ``[A-Za-z0-9-._~]``.
 PKCE_CHARSET: Final = "abcdefghijklmnopqrstuvwxyz123456789"
-STATE_LENGTH: Final = 8
+STATE_LENGTH: Final = 32
 
 # HTTP
 REQUEST_TIMEOUT: Final = 30  # seconds

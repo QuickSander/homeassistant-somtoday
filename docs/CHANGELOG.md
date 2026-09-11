@@ -3,7 +3,60 @@
 All notable changes to the SomToday Home Assistant integration are documented
 in this file.
 
-## [Unreleased]
+## [0.3.0] - 2026-09-11
+
+### Changed
+
+- **Authentication rewritten to the browser-based authorization-code + PKCE
+  flow** (`auth.py`), matching the MIT-licensed `jonisnet/ha-somtoday`
+  integration. SomToday removed the school-list endpoint
+  (`servers.somtoday.nl/organisaties.json`) in February 2025 and disabled the
+  password grant; server-side form scraping is fragile and breaks at SSO/MFA
+  schools. The new flow:
+  - Home Assistant shows a SomToday authorize URL **without `tenant_uuid`**, so
+    SomToday presents its own school picker.
+  - The user logs in through their own browser (SSO/MFA work) and pastes the
+    failed `somtoday://` redirect (or the DevTools `Location:` header, or a bare
+    code) back into the config flow.
+  - HA exchanges the code server-side at
+    `https://inloggen.somtoday.nl/oauth2/token` using the public
+    `somtoday-leerling-native` client and PKCE `S256`.
+  - `extract_code()` is forgiving and raises `login_page` / `state_mismatch` /
+    `no_code` reasons; only HTTP 400 + `error=invalid_grant` is a definitive
+    rejection (`SomtodayInvalidAuth`), everything else stays retryable.
+  - Rotating refresh tokens are preserved (and re-persisted) across refreshes;
+    a refresh that omits `somtoday_api_url` keeps the previous value.
+- Removed the server-side login code: `SomTodayAuthClient`, `async_get_schools`,
+  the PKCE form-scraping steps, the password-grant fallback and the
+  school/credential config-flow steps.
+- `SomTodayApiClient.async_get_account()` reads `/rest/v1/account/me`; the
+  config flow uses it as the unique id (falling back to
+  `/rest/v1/leerlingen`). Error responses now log a bounded
+  status/body/redirect diagnostic summary (never tokens).
+- `models.py`: removed `School`/`parse_schools`; added `Account`/`parse_account`
+  and account metadata (`account_id`, `student_id`, `student_name`) on
+  `SomTodayTokens` (restored from and persisted to the config entry).
+- `config_flow.py`: single paste-based login step (with the authorize URL as an
+  `{auth_url}` placeholder and a Chrome DevTools tip), reauth with
+  `wrong_account` detection and `async_update_reload_and_abort`, and an options
+  flow that reloads via `hass.config_entries.async_schedule_reload`.
+- `strings.json`/`translations`: replaced the school/credentials steps with the
+  new login step and added the `invalid_url`, `login_page`, `state_mismatch`,
+  `invalid_auth`, `cannot_connect`, `no_students` and `wrong_account` keys.
+- `manifest.json` bumped to `0.3.0`.
+- Tests rewritten for the new flow (`tests/test_auth.py`,
+  `tests/test_config_flow.py`, `tests/test_api.py`, `tests/test_models.py`,
+  `tests/test_translations.py`): 135 tests, 99% line coverage, all SomToday HTTP
+  mocked.
+
+### Removed
+
+- Constants `SCHOOLS_URL`, `TOKEN_URL_SSO`, `CLIENT_ID_SSO`, `USERNAME_FIELD`,
+  `PASSWORD_FIELD`, `CONF_TENANT_UUID`, `CONF_SCHOOL_NAME`, `CONF_USERNAME`,
+  `CONF_AUTH_METHOD` and `AUTH_METHOD_PKCE`/`AUTH_METHOD_PASSWORD`.
+- The `SomTodaySsoNotSupported` exception (the browser flow handles SSO/MFA).
+
+## [0.2.0]
 
 ### Added
 

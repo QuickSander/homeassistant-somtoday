@@ -4,7 +4,7 @@ A Home Assistant custom component that logs in to [SomToday](https://www.somtoda
 and (eventually) exposes a student's schedule, homework, grades and absence as
 Home Assistant entities.
 
-> **Current status: authentication only (v0.2.0).**
+> **Current status: authentication only (v0.3.0).**
 > This release installs and authenticates against SomToday so the login flow can
 > be tested from the Home Assistant UI. **No entities, sensors or coordinator are
 > added yet** — the integration currently validates the session during setup and
@@ -13,11 +13,8 @@ Home Assistant entities.
 ## Requirements
 
 - Home Assistant 2024.11 or newer.
-- A SomToday account for a school that uses the standard SomToday login
-  (username + password).
-- **Not supported:** schools that only allow login through an external identity
-  provider (single sign-on / SSO). The config flow reports
-  `sso_not_supported` for those accounts.
+- A SomToday account. Because you log in through your own browser, **SSO and
+  MFA are fully supported** — there is no per-school configuration.
 
 ## Installation
 
@@ -37,16 +34,29 @@ Home Assistant entities.
 
 ## Configuration
 
+SomToday removed its public school list and disabled the password grant. This
+integration therefore uses the same browser-based authorization-code + PKCE
+flow as the official app:
+
 1. Go to **Settings → Devices & Services → Add Integration**.
 2. Search for **SomToday**.
-3. **Select your school** from the searchable list (loaded from SomToday's
-   public school list).
-4. **Sign in** with your SomToday username and password. The password is used
-   once for the login and is never stored; only the rotating refresh token is
-   saved in the config entry.
-5. If the account has more than one student, choose the student to add.
-6. The integration finishes setup by refreshing the stored token. If the session
-   is no longer valid, Home Assistant prompts you to re-authenticate.
+3. Home Assistant shows a SomToday **authorize URL**. Open it in your browser.
+   SomToday asks you to pick your school and log in; SSO/MFA work as usual.
+4. After a successful login, your browser is redirected to a `somtoday://`
+   address that Home Assistant cannot receive. Copy that redirect back into the
+   form using one of these methods:
+   - copy the full `somtoday://…/oauth/callback?code=…&state=…` URL from the
+     address bar **before** the browser discards it, or
+   - open **Chrome DevTools → Network**, find the request to the callback, and
+     copy the value of its **`Location:`** response header, or
+   - paste just the authorization `code`.
+5. Home Assistant exchanges the code for tokens, reads
+   `/rest/v1/account/me` (falling back to `/rest/v1/leerlingen`) and creates the
+   config entry. Only the rotating refresh token and account metadata are stored.
+
+If the paste is wrong (for example you copied the login page instead of the
+redirect), the form tells you and **keeps the same authorize URL**, so you can
+finish the login you already started.
 
 ### Options
 
@@ -84,17 +94,23 @@ a config entry; check **Settings → Devices & Services** for the SomToday entry
 
 | Symptom | Likely cause |
 |---------|--------------|
-| `Cannot connect` | No internet, or `servers.somtoday.nl` unreachable. |
-| `Invalid username or password` | Wrong credentials, or the school uses SSO. |
-| `This school requires single sign-on` | SSO-only account — not supported yet. |
+| `Could not find an authorization code in the pasted text` | You pasted something that is not a redirect URL or code. Copy the `somtoday://…?code=…` URL or just the code. |
+| `It looks like the login was not completed yet` | You pasted the login page (it contains `auth=`) instead of the final redirect. Finish the login first. |
+| `This redirect does not belong to the current login attempt` | The `state` in the pasted URL does not match the shown authorize URL. Start again from the link in the form. |
+| `SomToday rejected the authorization code` | The code was already used or expired. Restart the login from the newly shown URL. |
+| `Could not connect to SomToday` | No internet or a temporary SomToday failure. Retry; the form keeps the same authorize URL when it is safe. |
+| `No students were found for this account` | The account has no linked students. |
+| `A different SomToday account signed in` | During reauth a different account was used than the one being repaired. |
 | Setup fails and asks to re-authenticate | The stored refresh token was rejected; sign in again. |
 
 If login fails unexpectedly, please open an issue and include the debug log for
-`custom_components.sometoday` (it never contains the password).
+`custom_components.sometoday` (it never contains passwords or tokens).
 
 ## Privacy and security
 
-- The password is only used to obtain tokens and is **never persisted**.
+- No password is ever requested or stored.
+- The authorization code and PKCE verifier are used once during setup and are
+  never persisted; only the rotating refresh token is stored.
 - The refresh token is stored by Home Assistant in
   `.storage/core.config_entries` as plain text (the standard Home Assistant
   limitation). Restrict access to your configuration directory accordingly.

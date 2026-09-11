@@ -1,18 +1,20 @@
-"""Tests for the SomToday config and options flow.
+"""Tests for the SomToday config, reauth and options flows.
 
 All SomToday HTTP calls are mocked; the real API is never contacted.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import CONF_PASSWORD
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -23,49 +25,45 @@ from custom_components.sometoday import (
     async_unload_entry,
 )
 from custom_components.sometoday.api import SomTodayApiClient
-from custom_components.sometoday.auth import SomTodayAuthClient
-from custom_components.sometoday.config_flow import _school_option
+from custom_components.sometoday.auth import SomTodayAuth
 from custom_components.sometoday.const import (
+    CONF_ACCOUNT_ID,
     CONF_API_URL,
-    CONF_AUTH_METHOD,
+    CONF_ENABLE_ABSENCE,
     CONF_ENABLE_GRADES,
+    CONF_ENABLE_HOMEWORK,
     CONF_HOMEWORK_DAYS_AHEAD,
+    CONF_REDIRECT_URL,
     CONF_REFRESH_TOKEN,
     CONF_SCAN_INTERVAL,
     CONF_SCHEDULE_DAYS_AHEAD,
-    CONF_SCHOOL_NAME,
     CONF_STUDENT_ID,
-    CONF_TENANT_UUID,
-    CONF_USERNAME,
+    CONF_STUDENT_NAME,
     DEFAULT_API_URL,
     DOMAIN,
 )
 from custom_components.sometoday.exceptions import (
-    SomTodayAuthError,
+    SomTodayApiError,
     SomTodayConnectionError,
-    SomTodayError,
-    SomTodaySsoNotSupported,
+    SomtodayInvalidAuth,
 )
-from custom_components.sometoday.models import School, SomTodayTokens, Student
+from custom_components.sometoday.models import Account, SomTodayTokens, Student
 
-TENANT = "099ce144-c400-4468-95d4-ad36f9f5cb5c"
-USERNAME = "450000@live.bc-enschede.nl"
-PASSWORD = "secret"
 API_URL = "https://api.somtoday.nl"
+REDIRECT_BASE = "somtoday://nl.topicus.somtoday.leerling/oauth/callback"
 
-SCHOOL = School(uuid=TENANT, name="Etty Hillesum Lyceum", place="Enschede")
+ACCOUNT = Account(id="account-1", username="eli@example.com")
 STUDENT = Student(id=1234, leerlingnummer="450000", roepnaam="Eli", achternaam="Saado")
-OTHER_STUDENT = Student(id=5678, leerlingnummer="450001", roepnaam="Sam")
 
 
 @pytest.fixture(autouse=True)
-def auto_enable_custom_integrations(enable_custom_integrations: Any) -> Any:
+def auto_enable_custom_integrations(enable_custom_integrations: Any) -> Iterator[None]:
     """Enable loading the custom integration in every test."""
     yield
 
 
 def _tokens(refresh_token: str = "refresh") -> SomTodayTokens:
-    """Return a set of fresh tokens for the fake login."""
+    """Return a set of fresh tokens for the fake exchange."""
     return SomTodayTokens(
         access_token="access",
         refresh_token=refresh_token,
@@ -74,12 +72,16 @@ def _tokens(refresh_token: str = "refresh") -> SomTodayTokens:
     )
 
 
-async def _fake_login(
-    self: SomTodayAuthClient, username: str, password: str, *, refresh_token: str = "refresh"
+async def _fake_exchange(
+    session: Any, code: str, code_verifier: str
 ) -> SomTodayTokens:
-    """Fake a successful login that stores the tokens on the client."""
-    self.tokens = _tokens(refresh_token)
-    return self.tokens
+    """Fake a successful code exchange."""
+    return _tokens()
+
+
+async def _fake_account(self: SomTodayApiClient) -> Account:
+    """Fake the account response."""
+    return ACCOUNT
 
 
 async def _fake_students(self: SomTodayApiClient) -> list[Student]:
@@ -87,215 +89,312 @@ async def _fake_students(self: SomTodayApiClient) -> list[Student]:
     return [STUDENT]
 
 
-def _login_patch(refresh_token: str = "refresh"):
-    """Patch ``SomTodayAuthClient.async_login`` with a fake login."""
-
-    async def _login(self: SomTodayAuthClient, username: str, password: str) -> Any:
-        return await _fake_login(self, username, password, refresh_token=refresh_token)
-
-    return patch.object(SomTodayAuthClient, "async_login", new=_login)
+async def _noop_ensure_valid(self: SomTodayAuth) -> None:
+    """Skip token refresh during flow tests."""
 
 
-async def test_user_flow_single_student(hass: Any) -> None:
-    """A single-student account creates an entry without the student step."""
+@contextmanager
+def _patched_login(
+    *,
+    exchange: Any = None,
+    account_error: Exception | None = None,
+    students: list[Student] | None = None,
+    students_error: Exception | None = None,
+) -> Iterator[None]:
+    """Patch the exchange and account/student discovery used by the flow."""
+    exchange = exchange or _fake_exchange
+    if account_error is not None:
+        account_patch = patch.object(
+            SomTodayApiClient, "async_get_account", side_effect=account_error
+        )
+    else:
+        account_patch = patch.object(
+            SomTodayApiClient, "async_get_account", new=_fake_account
+        )
+
+    if students_error is not None:
+        students_patch = patch.object(
+            SomTodayApiClient, "async_get_students", side_effect=students_error
+        )
+    else:
+        selected = list(students if students is not None else [STUDENT])
+
+        async def _students(self: SomTodayApiClient) -> list[Student]:
+            return selected
+
+        students_patch = patch.object(
+            SomTodayApiClient, "async_get_students", new=_students
+        )
+
     with (
         patch(
-            "custom_components.sometoday.config_flow.async_get_schools",
-            return_value=[SCHOOL],
+            "custom_components.sometoday.config_flow.async_exchange_code",
+            new=exchange,
         ),
-        _login_patch(),
-        patch.object(SomTodayApiClient, "async_get_students", new=_fake_students),
+        account_patch,
+        students_patch,
+        patch.object(SomTodayAuth, "async_ensure_valid", new=_noop_ensure_valid),
     ):
+        yield
+
+
+def _auth_url(result: dict[str, Any]) -> str:
+    """Return the authorize URL shown by the form."""
+    return result["description_placeholders"]["auth_url"]
+
+
+def _state_from_url(url: str) -> str:
+    """Extract the state query parameter from the authorize URL."""
+    return parse_qs(urlparse(url).query)["state"][0]
+
+
+def _redirect(code: str = "THECODE", state: str | None = None) -> str:
+    """Build a somtoday:// redirect for the given code/state."""
+    url = f"{REDIRECT_BASE}?code={code}"
+    if state is not None:
+        url = f"{url}&state={state}"
+    return url
+
+
+def _make_entry(hass: Any, *, refresh_token: str = "old-refresh") -> MockConfigEntry:
+    """Create and register an entry suitable for setup/reauth tests."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="account-1",
+        data={
+            CONF_REFRESH_TOKEN: refresh_token,
+            CONF_API_URL: API_URL,
+            CONF_ACCOUNT_ID: "account-1",
+            CONF_STUDENT_ID: STUDENT.id,
+            CONF_STUDENT_NAME: "Eli Saado",
+        },
+    )
+    entry.add_to_hass(hass)
+    return entry
+
+
+# ---------------------------------------------------------------------------
+# async_step_user
+# ---------------------------------------------------------------------------
+async def test_user_flow_success(hass: Any) -> None:
+    """A valid paste creates an entry with the account metadata."""
+    with _patched_login():
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
         assert result["type"] is FlowResultType.FORM
         assert result["step_id"] == "user"
+        auth_url = _auth_url(result)
+        assert "tenant_uuid" not in auth_url
+        assert "code_challenge_method=S256" in auth_url
 
+        state = _state_from_url(auth_url)
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_TENANT_UUID: TENANT}
-        )
-        assert result["type"] is FlowResultType.FORM
-        assert result["step_id"] == "credentials"
-
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {CONF_USERNAME: USERNAME, CONF_PASSWORD: PASSWORD},
+            result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
         )
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "SomToday Eli Saado"
-    assert result["data"][CONF_TENANT_UUID] == TENANT
-    assert result["data"][CONF_USERNAME] == USERNAME
-    assert result["data"][CONF_SCHOOL_NAME] == SCHOOL.name
     assert result["data"][CONF_REFRESH_TOKEN] == "refresh"
+    assert result["data"][CONF_API_URL] == API_URL
+    assert result["data"][CONF_ACCOUNT_ID] == "account-1"
     assert result["data"][CONF_STUDENT_ID] == STUDENT.id
-    assert result["data"][CONF_AUTH_METHOD] == "pkce"
+    assert result["data"][CONF_STUDENT_NAME] == "Eli Saado"
+
+    entries = hass.config_entries.async_entries(DOMAIN)
+    assert entries[0].unique_id == "account-1"
 
 
-async def test_user_flow_multiple_students(hass: Any) -> None:
-    """An account with multiple students asks the user to pick one."""
-
-    async def _students(self: SomTodayApiClient) -> list[Student]:
-        return [STUDENT, OTHER_STUDENT]
-
-    with (
-        patch(
-            "custom_components.sometoday.config_flow.async_get_schools",
-            return_value=[SCHOOL],
-        ),
-        _login_patch(),
-        patch.object(SomTodayApiClient, "async_get_students", new=_students),
-    ):
+async def test_user_flow_bare_code(hass: Any) -> None:
+    """A bare code is accepted without state validation."""
+    with _patched_login():
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_TENANT_UUID: TENANT}
-        )
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {CONF_USERNAME: USERNAME, CONF_PASSWORD: PASSWORD},
-        )
-        assert result["type"] is FlowResultType.FORM
-        assert result["step_id"] == "student"
-
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_STUDENT_ID: str(OTHER_STUDENT.id)}
+            result["flow_id"], {CONF_REDIRECT_URL: "ABCDEFGHIJKLMNOP"}
         )
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["data"][CONF_STUDENT_ID] == OTHER_STUDENT.id
-    assert result["title"] == "SomToday Sam"
 
 
-async def test_user_flow_invalid_auth(hass: Any) -> None:
-    """Invalid credentials show the invalid_auth error."""
-    with (
-        patch(
-            "custom_components.sometoday.config_flow.async_get_schools",
-            return_value=[SCHOOL],
-        ),
-        patch.object(
-            SomTodayAuthClient,
-            "async_login",
-            side_effect=SomTodayAuthError("bad credentials"),
-        ),
-    ):
+async def test_user_flow_account_fallback_to_student_id(hass: Any) -> None:
+    """When /account/me fails, the student id becomes the unique id."""
+    with _patched_login(account_error=SomTodayApiError("no account endpoint")):
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
+        state = _state_from_url(_auth_url(result))
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_TENANT_UUID: TENANT}
-        )
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {CONF_USERNAME: USERNAME, CONF_PASSWORD: PASSWORD},
+            result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
         )
 
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "credentials"
-    assert result["errors"] == {"base": "invalid_auth"}
-
-
-async def test_user_flow_school_list_connection_error(hass: Any) -> None:
-    """A failing school list shows cannot_connect and allows a retry."""
-    with patch(
-        "custom_components.sometoday.config_flow.async_get_schools",
-        side_effect=SomTodayConnectionError("offline"),
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": config_entries.SOURCE_USER}
-        )
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "user"
-    assert result["errors"] == {"base": "cannot_connect"}
-
-
-async def test_user_flow_sso_not_supported(hass: Any) -> None:
-    """An SSO-only school surfaces the sso_not_supported error."""
-    with (
-        patch(
-            "custom_components.sometoday.config_flow.async_get_schools",
-            return_value=[SCHOOL],
-        ),
-        patch.object(
-            SomTodayAuthClient,
-            "async_login",
-            side_effect=SomTodaySsoNotSupported("sso"),
-        ),
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": config_entries.SOURCE_USER}
-        )
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_TENANT_UUID: TENANT}
-        )
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {CONF_USERNAME: USERNAME, CONF_PASSWORD: PASSWORD},
-        )
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {"base": "sso_not_supported"}
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_ACCOUNT_ID] == str(STUDENT.id)
 
 
 async def test_user_flow_duplicate_aborts(hass: Any) -> None:
     """An account that is already configured aborts the flow."""
     existing = MockConfigEntry(
         domain=DOMAIN,
-        unique_id=f"{TENANT}:{USERNAME}",
-        data={CONF_TENANT_UUID: TENANT, CONF_USERNAME: USERNAME},
+        unique_id="account-1",
+        data={CONF_REFRESH_TOKEN: "x", CONF_API_URL: API_URL},
     )
     existing.add_to_hass(hass)
 
-    with (
-        patch(
-            "custom_components.sometoday.config_flow.async_get_schools",
-            return_value=[SCHOOL],
-        ),
-        _login_patch(),
-    ):
+    with _patched_login():
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
+        state = _state_from_url(_auth_url(result))
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_TENANT_UUID: TENANT}
-        )
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {CONF_USERNAME: USERNAME, CONF_PASSWORD: PASSWORD},
+            result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
         )
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
 
 
+async def test_user_flow_no_students(hass: Any) -> None:
+    """An empty student list shows no_students."""
+    with _patched_login(students=[]):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        state = _state_from_url(_auth_url(result))
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert result["errors"] == {"base": "no_students"}
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (SomtodayInvalidAuth("bad code"), "invalid_auth"),
+        (SomTodayConnectionError("offline"), "cannot_connect"),
+        (SomTodayApiError("malformed"), "cannot_connect"),
+        (RuntimeError("boom"), "unknown"),
+    ],
+)
+async def test_user_flow_exchange_errors(
+    hass: Any, error: Exception, expected: str
+) -> None:
+    """Exchange failures map to the documented error keys."""
+
+    async def _exchange(session: Any, code: str, code_verifier: str) -> Any:
+        raise error
+
+    with _patched_login(exchange=_exchange):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        state = _state_from_url(_auth_url(result))
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert result["errors"] == {"base": expected}
+
+
+async def test_user_flow_login_page_paste(hass: Any) -> None:
+    """Pasting the login page reports login_page."""
+    with _patched_login():
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_REDIRECT_URL: "https://inloggen.somtoday.nl/?auth=SESSION"},
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "login_page"}
+
+
+async def test_user_flow_state_mismatch(hass: Any) -> None:
+    """A redirect with a wrong state reports state_mismatch."""
+    with _patched_login():
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_REDIRECT_URL: _redirect(state="WRONG")}
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "state_mismatch"}
+
+
+async def test_user_flow_invalid_url(hass: Any) -> None:
+    """Unstructured input reports invalid_url."""
+    with _patched_login():
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_REDIRECT_URL: "not a code"}
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "invalid_url"}
+
+
+async def test_authorize_url_kept_on_recoverable_paste(hass: Any) -> None:
+    """A paste mistake must not invalidate the user's open login."""
+    with _patched_login():
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        first_url = _auth_url(result)
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_REDIRECT_URL: "not a code"}
+        )
+        second_url = _auth_url(result)
+
+    assert first_url == second_url
+
+
+async def test_authorize_url_regenerated_when_spent(hass: Any) -> None:
+    """A definitive rejection mints a new PKCE pair + state."""
+    calls = 0
+
+    async def _exchange(session: Any, code: str, code_verifier: str) -> Any:
+        nonlocal calls
+        calls += 1
+        raise SomtodayInvalidAuth("spent")
+
+    with _patched_login(exchange=_exchange):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        first_url = _auth_url(result)
+        state = _state_from_url(first_url)
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
+        )
+        second_url = _auth_url(result)
+
+    assert calls == 1
+    assert first_url != second_url
+
+
+# ---------------------------------------------------------------------------
+# Reauth
+# ---------------------------------------------------------------------------
 async def test_reauth_flow_updates_refresh_token(hass: Any) -> None:
     """A reauth stores the rotated refresh token and reloads the entry."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        unique_id=f"{TENANT}:{USERNAME}",
-        data={
-            CONF_TENANT_UUID: TENANT,
-            CONF_SCHOOL_NAME: SCHOOL.name,
-            CONF_USERNAME: USERNAME,
-            CONF_REFRESH_TOKEN: "old-refresh",
-            CONF_API_URL: API_URL,
-            CONF_AUTH_METHOD: "pkce",
-        },
-    )
-    entry.add_to_hass(hass)
+    entry = _make_entry(hass)
 
-    async def _refresh(self: SomTodayAuthClient) -> SomTodayTokens:
-        self.tokens = _tokens("rotated")
-        return self.tokens
+    async def _rotating(session: Any, code: str, code_verifier: str) -> Any:
+        return _tokens("rotated")
 
-    with (
-        _login_patch(refresh_token="rotated"),
-        patch.object(SomTodayAuthClient, "async_refresh", new=_refresh),
-    ):
+    with _patched_login(exchange=_rotating):
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={
@@ -307,8 +406,9 @@ async def test_reauth_flow_updates_refresh_token(hass: Any) -> None:
         assert result["type"] is FlowResultType.FORM
         assert result["step_id"] == "reauth_confirm"
 
+        state = _state_from_url(_auth_url(result))
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_PASSWORD: PASSWORD}
+            result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
         )
         await hass.async_block_till_done()
 
@@ -316,6 +416,64 @@ async def test_reauth_flow_updates_refresh_token(hass: Any) -> None:
     assert result["reason"] == "reauth_successful"
     assert entry.data[CONF_REFRESH_TOKEN] == "rotated"
     assert entry.state is ConfigEntryState.LOADED
+
+
+async def test_reauth_flow_wrong_account(hass: Any) -> None:
+    """A different account signing in aborts with wrong_account."""
+    entry = _make_entry(hass)
+    hass.config_entries.async_update_entry(entry, unique_id="some-other-account")
+
+    with _patched_login():
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_REAUTH,
+                "entry_id": entry.entry_id,
+            },
+            data=entry.data,
+        )
+        state = _state_from_url(_auth_url(result))
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
+        )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "wrong_account"
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (SomtodayInvalidAuth("bad"), "invalid_auth"),
+        (SomTodayConnectionError("offline"), "cannot_connect"),
+    ],
+)
+async def test_reauth_flow_errors(
+    hass: Any, error: Exception, expected: str
+) -> None:
+    """Reauth maps exchange failures to the documented error keys."""
+    entry = _make_entry(hass)
+
+    async def _exchange(session: Any, code: str, code_verifier: str) -> Any:
+        raise error
+
+    with _patched_login(exchange=_exchange):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_REAUTH,
+                "entry_id": entry.entry_id,
+            },
+            data=entry.data,
+        )
+        state = _state_from_url(_auth_url(result))
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reauth_confirm"
+    assert result["errors"] == {"base": expected}
 
 
 async def test_reauth_after_failed_setup_reloads_entry(hass: Any) -> None:
@@ -324,39 +482,22 @@ async def test_reauth_after_failed_setup_reloads_entry(hass: Any) -> None:
     Regression test for review B1: without a reload the entry stays broken even
     though the reauth flow reports success.
     """
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        unique_id=f"{TENANT}:{USERNAME}",
-        data={
-            CONF_TENANT_UUID: TENANT,
-            CONF_SCHOOL_NAME: SCHOOL.name,
-            CONF_USERNAME: USERNAME,
-            CONF_REFRESH_TOKEN: "old-refresh",
-            CONF_API_URL: API_URL,
-            CONF_AUTH_METHOD: "pkce",
-        },
-    )
-    entry.add_to_hass(hass)
-
-    async def _ensure_valid_fail(self: SomTodayAuthClient) -> None:
-        raise SomTodayAuthError("access token rejected")
+    entry = _make_entry(hass)
 
     with patch.object(
-        SomTodayAuthClient, "async_ensure_valid", new=_ensure_valid_fail
+        SomTodayAuth,
+        "async_ensure_valid",
+        side_effect=SomtodayInvalidAuth("expired"),
     ):
         assert not await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
     assert entry.state is ConfigEntryState.SETUP_ERROR
 
-    async def _refresh(self: SomTodayAuthClient) -> SomTodayTokens:
-        self.tokens = _tokens("rotated")
-        return self.tokens
+    async def _rotating(session: Any, code: str, code_verifier: str) -> Any:
+        return _tokens("rotated")
 
-    with (
-        _login_patch(refresh_token="rotated"),
-        patch.object(SomTodayAuthClient, "async_refresh", new=_refresh),
-    ):
+    with _patched_login(exchange=_rotating):
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={
@@ -365,8 +506,9 @@ async def test_reauth_after_failed_setup_reloads_entry(hass: Any) -> None:
             },
             data=entry.data,
         )
+        state = _state_from_url(_auth_url(result))
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_PASSWORD: PASSWORD}
+            result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
         )
         await hass.async_block_till_done()
 
@@ -376,277 +518,120 @@ async def test_reauth_after_failed_setup_reloads_entry(hass: Any) -> None:
     assert entry.state is ConfigEntryState.LOADED
 
 
+# ---------------------------------------------------------------------------
+# Options flow
+# ---------------------------------------------------------------------------
 async def test_options_flow(hass: Any) -> None:
     """The options flow persists the poll interval and feature toggles."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        unique_id=f"{TENANT}:{USERNAME}",
-        data={CONF_TENANT_UUID: TENANT, CONF_USERNAME: USERNAME},
-    )
-    entry.add_to_hass(hass)
+    entry = _make_entry(hass)
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "init"
+    with patch.object(SomTodayAuth, "async_ensure_valid", new=_noop_ensure_valid):
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "init"
 
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {
-            CONF_SCAN_INTERVAL: 30,
-            CONF_SCHEDULE_DAYS_AHEAD: 7,
-            CONF_HOMEWORK_DAYS_AHEAD: 3,
-            CONF_ENABLE_GRADES: False,
-            "enable_homework": True,
-            "enable_absence": True,
-        },
-    )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {
+                CONF_SCAN_INTERVAL: 30,
+                CONF_SCHEDULE_DAYS_AHEAD: 7,
+                CONF_HOMEWORK_DAYS_AHEAD: 3,
+                CONF_ENABLE_GRADES: False,
+                "enable_homework": True,
+                "enable_absence": True,
+            },
+        )
+        await hass.async_block_till_done()
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.options[CONF_SCAN_INTERVAL] == 30
     assert entry.options[CONF_ENABLE_GRADES] is False
 
 
+async def test_options_flow_schedules_reload(hass: Any) -> None:
+    """Saving options schedules an entry reload (architecture §4.1).
+
+    There is no update listener, so the reload is the only mechanism that makes
+    the new options take effect.
+    """
+    entry = _make_entry(hass)
+
+    with patch.object(
+        hass.config_entries, "async_schedule_reload"
+    ) as schedule_reload:
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {
+                CONF_SCAN_INTERVAL: 30,
+                CONF_SCHEDULE_DAYS_AHEAD: 7,
+                CONF_HOMEWORK_DAYS_AHEAD: 3,
+                CONF_ENABLE_GRADES: True,
+                CONF_ENABLE_HOMEWORK: True,
+                CONF_ENABLE_ABSENCE: True,
+            },
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    schedule_reload.assert_called_once_with(entry.entry_id)
+
+
+# ---------------------------------------------------------------------------
+# Setup entry
+# ---------------------------------------------------------------------------
 async def test_setup_entry_refreshes_token(hass: Any) -> None:
-    """Setting up an entry refreshes the stored token and exposes runtime data."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        unique_id=f"{TENANT}:{USERNAME}",
-        data={
-            CONF_TENANT_UUID: TENANT,
-            CONF_USERNAME: USERNAME,
-            CONF_REFRESH_TOKEN: "old-refresh",
-            CONF_API_URL: API_URL,
-            CONF_AUTH_METHOD: "pkce",
-        },
-    )
-    entry.add_to_hass(hass)
+    """Setting up an entry refreshes and persists the rotated token."""
+    entry = _make_entry(hass, refresh_token="old-refresh")
 
-    async def _refresh(self: SomTodayAuthClient) -> SomTodayTokens:
-        self.tokens = _tokens("new-refresh")
-        return self.tokens
+    async def _refresh(session: Any, refresh_token: str, **kwargs: Any) -> Any:
+        return _tokens("new-refresh")
 
-    with patch.object(SomTodayAuthClient, "async_refresh", new=_refresh):
+    with patch(
+        "custom_components.sometoday.auth.async_refresh_tokens", new=_refresh
+    ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
     assert entry.state is ConfigEntryState.LOADED
-    assert entry.runtime_data.api.base_url == DEFAULT_API_URL
+    assert entry.runtime_data.api.base_url == API_URL
     assert entry.data[CONF_REFRESH_TOKEN] == "new-refresh"
 
-# ---------------------------------------------------------------------------
-# Config-flow slice: remaining error mappings, student-fetch validation,
-# reauth errors and setup-entry exception mapping.
-# ---------------------------------------------------------------------------
-async def _run_credentials_flow(
-    hass: Any,
-    *,
-    login_error: Exception | None = None,
-    students: list[Student] | None = None,
-    students_error: Exception | None = None,
-) -> dict[str, Any]:
-    """Drive the user → credentials flow and return the last result."""
-    login = (
-        patch.object(SomTodayAuthClient, "async_login", side_effect=login_error)
-        if login_error is not None
-        else _login_patch()
-    )
-    if students_error is not None:
-        students_patch = patch.object(
-            SomTodayApiClient, "async_get_students", side_effect=students_error
-        )
-    else:
 
-        async def _students(self: SomTodayApiClient) -> list[Student]:
-            return list(students or [])
+async def test_setup_entry_keeps_refresh_token_when_not_rotated(hass: Any) -> None:
+    """A non-rotating refresh response leaves the stored token untouched."""
+    entry = _make_entry(hass, refresh_token="same-refresh")
 
-        students_patch = patch.object(
-            SomTodayApiClient, "async_get_students", new=_students
-        )
+    async def _refresh(session: Any, refresh_token: str, **kwargs: Any) -> Any:
+        return _tokens("same-refresh")
 
-    with (
-        patch(
-            "custom_components.sometoday.config_flow.async_get_schools",
-            return_value=[SCHOOL],
-        ),
-        login,
-        students_patch,
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": config_entries.SOURCE_USER}
-        )
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_TENANT_UUID: TENANT}
-        )
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_USERNAME: USERNAME, CONF_PASSWORD: PASSWORD}
-        )
-    return result
-
-
-async def test_user_flow_login_connection_error(hass: Any) -> None:
-    """A network failure during login shows cannot_connect."""
-    result = await _run_credentials_flow(
-        hass, login_error=SomTodayConnectionError("offline")
-    )
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "credentials"
-    assert result["errors"] == {"base": "cannot_connect"}
-
-
-async def test_user_flow_login_unexpected_error(hass: Any) -> None:
-    """An unexpected login failure shows unknown."""
-    result = await _run_credentials_flow(hass, login_error=SomTodayError("boom"))
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "credentials"
-    assert result["errors"] == {"base": "unknown"}
-
-
-async def test_user_flow_school_list_unexpected_error(hass: Any) -> None:
-    """An unexpected school-list failure shows unknown on the user step."""
     with patch(
-        "custom_components.sometoday.config_flow.async_get_schools",
-        side_effect=SomTodayError("boom"),
+        "custom_components.sometoday.auth.async_refresh_tokens", new=_refresh
     ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": config_entries.SOURCE_USER}
-        )
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
 
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "user"
-    assert result["errors"] == {"base": "unknown"}
-
-
-@pytest.mark.parametrize(
-    ("error", "expected"),
-    [
-        (SomTodayAuthError("rejected"), "invalid_auth"),
-        (SomTodayConnectionError("offline"), "cannot_connect"),
-        (SomTodayError("boom"), "unknown"),
-    ],
-)
-async def test_user_flow_student_fetch_errors(
-    hass: Any, error: Exception, expected: str
-) -> None:
-    """A failing student-list validation maps to the documented error."""
-    result = await _run_credentials_flow(hass, students_error=error)
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "credentials"
-    assert result["errors"] == {"base": expected}
-
-
-async def test_user_flow_no_students(hass: Any) -> None:
-    """An empty student list shows no_students."""
-    result = await _run_credentials_flow(hass, students=[])
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "credentials"
-    assert result["errors"] == {"base": "no_students"}
-
-
-def test_school_option_labels() -> None:
-    """The school selector label includes the place only when present."""
-    without_place = _school_option(School(uuid="u1", name="A"))
-    with_place = _school_option(School(uuid="u2", name="B", place="Enschede"))
-
-    assert without_place == {"value": "u1", "label": "A"}
-    assert with_place == {"value": "u2", "label": "B (Enschede)"}
-
-
-async def _run_reauth_flow(hass: Any, entry: MockConfigEntry, error: Exception) -> Any:
-    """Start a reauth flow for ``entry`` and submit a failing password."""
-    with patch.object(SomTodayAuthClient, "async_login", side_effect=error):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={
-                "source": config_entries.SOURCE_REAUTH,
-                "entry_id": entry.entry_id,
-            },
-            data=entry.data,
-        )
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_PASSWORD: PASSWORD}
-        )
-    return result
-
-
-def _reauth_entry(hass: Any) -> MockConfigEntry:
-    """Create and register an entry suitable for a reauth flow."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        unique_id=f"{TENANT}:{USERNAME}",
-        data={
-            CONF_TENANT_UUID: TENANT,
-            CONF_SCHOOL_NAME: SCHOOL.name,
-            CONF_USERNAME: USERNAME,
-            CONF_REFRESH_TOKEN: "old-refresh",
-            CONF_API_URL: API_URL,
-            CONF_AUTH_METHOD: "pkce",
-        },
-    )
-    entry.add_to_hass(hass)
-    return entry
-
-
-@pytest.mark.parametrize(
-    ("error", "expected"),
-    [
-        (SomTodaySsoNotSupported("sso"), "sso_not_supported"),
-        (SomTodayAuthError("bad"), "invalid_auth"),
-        (SomTodayConnectionError("offline"), "cannot_connect"),
-        (SomTodayError("boom"), "unknown"),
-    ],
-)
-async def test_reauth_flow_errors(
-    hass: Any, error: Exception, expected: str
-) -> None:
-    """Reauth maps every login failure to the documented error."""
-    entry = _reauth_entry(hass)
-
-    result = await _run_reauth_flow(hass, entry, error)
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "reauth_confirm"
-    assert result["errors"] == {"base": expected}
-
-
-def _setup_entry(hass: Any, refresh_token: str = "old-refresh") -> MockConfigEntry:
-    """Create and register an entry for setup-entry tests."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        unique_id=f"{TENANT}:{USERNAME}",
-        data={
-            CONF_TENANT_UUID: TENANT,
-            CONF_USERNAME: USERNAME,
-            CONF_REFRESH_TOKEN: refresh_token,
-            CONF_API_URL: API_URL,
-            CONF_AUTH_METHOD: "pkce",
-        },
-    )
-    entry.add_to_hass(hass)
-    return entry
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.data[CONF_REFRESH_TOKEN] == "same-refresh"
 
 
 async def test_setup_entry_auth_failure(hass: Any) -> None:
-    """A rejected stored token raises ConfigEntryAuthFailed."""
-    entry = _setup_entry(hass)
+    """A definitive rejection raises ConfigEntryAuthFailed."""
+    entry = _make_entry(hass)
 
     with patch.object(
-        SomTodayAuthClient,
+        SomTodayAuth,
         "async_ensure_valid",
-        side_effect=SomTodayAuthError("expired"),
+        side_effect=SomtodayInvalidAuth("expired"),
     ), pytest.raises(ConfigEntryAuthFailed):
         await async_setup_entry(hass, entry)
 
 
 async def test_setup_entry_connection_failure(hass: Any) -> None:
     """A network failure during setup raises ConfigEntryNotReady."""
-    entry = _setup_entry(hass)
+    entry = _make_entry(hass)
 
     with patch.object(
-        SomTodayAuthClient,
+        SomTodayAuth,
         "async_ensure_valid",
         side_effect=SomTodayConnectionError("offline"),
     ), pytest.raises(ConfigEntryNotReady):
@@ -655,30 +640,14 @@ async def test_setup_entry_connection_failure(hass: Any) -> None:
 
 async def test_setup_entry_unexpected_failure(hass: Any) -> None:
     """Any other SomToday error during setup raises ConfigEntryNotReady."""
-    entry = _setup_entry(hass)
+    entry = _make_entry(hass)
 
     with patch.object(
-        SomTodayAuthClient,
+        SomTodayAuth,
         "async_ensure_valid",
-        side_effect=SomTodayError("boom"),
+        side_effect=SomTodayApiError("boom"),
     ), pytest.raises(ConfigEntryNotReady):
         await async_setup_entry(hass, entry)
-
-
-async def test_setup_entry_keeps_refresh_token_when_not_rotated(hass: Any) -> None:
-    """A non-rotating refresh response leaves the stored token untouched."""
-    entry = _setup_entry(hass, refresh_token="same-refresh")
-
-    async def _refresh(self: SomTodayAuthClient) -> SomTodayTokens:
-        self.tokens = _tokens("same-refresh")
-        return self.tokens
-
-    with patch.object(SomTodayAuthClient, "async_refresh", new=_refresh):
-        assert await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-
-    assert entry.state is ConfigEntryState.LOADED
-    assert entry.data[CONF_REFRESH_TOKEN] == "same-refresh"
 
 
 async def test_async_migrate_entry(hass: Any) -> None:
@@ -691,6 +660,11 @@ async def test_async_migrate_entry(hass: Any) -> None:
 
 async def test_async_unload_entry(hass: Any) -> None:
     """Unloading an entry without platforms succeeds."""
-    entry = _setup_entry(hass)
+    entry = _make_entry(hass)
 
     assert await async_unload_entry(hass, entry) is True
+
+
+def test_default_api_url_constant() -> None:
+    """The default API URL is the documented SomToday host."""
+    assert DEFAULT_API_URL == "https://api.somtoday.nl"

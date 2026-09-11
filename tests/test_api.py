@@ -14,16 +14,15 @@ import aiohttp
 import pytest
 
 from custom_components.sometoday.api import SomTodayApiClient, _release
-from custom_components.sometoday.auth import SomTodayAuthClient
+from custom_components.sometoday.auth import SomTodayAuth
 from custom_components.sometoday.exceptions import (
     SomTodayApiError,
     SomTodayAuthError,
     SomTodayConnectionError,
     SomTodayRateLimitError,
 )
-from custom_components.sometoday.models import SomTodayTokens
+from custom_components.sometoday.models import Account, SomTodayTokens
 
-TENANT = "099ce144-c400-4468-95d4-ad36f9f5cb5c"
 API_URL = "https://api.somtoday.nl"
 STUDENT_ITEM: dict[str, Any] = {
     "links": [{"rel": "self", "id": 1234}],
@@ -31,6 +30,10 @@ STUDENT_ITEM: dict[str, Any] = {
     "roepnaam": "Eli",
     "achternaam": "Saado",
     "additionalObjects": {"pasfoto": {"datauri": "data:image/png;base64,AA"}},
+}
+ACCOUNT_ITEM: dict[str, Any] = {
+    "links": [{"rel": "self", "id": "account-1"}],
+    "username": "eli@example.com",
 }
 
 
@@ -44,13 +47,44 @@ def _tokens() -> SomTodayTokens:
     )
 
 
-def _client(fake_session: Any) -> tuple[SomTodayApiClient, SomTodayAuthClient]:
+def _client(fake_session: Any) -> tuple[SomTodayApiClient, SomTodayAuth]:
     """Build an API client around the scripted session."""
-    auth = SomTodayAuthClient(fake_session, TENANT)
-    auth.tokens = _tokens()
+    auth = SomTodayAuth(fake_session, tokens=_tokens())
     return SomTodayApiClient(fake_session, auth, API_URL), auth
 
 
+# ---------------------------------------------------------------------------
+# async_get_account
+# ---------------------------------------------------------------------------
+async def test_get_account_parses(fake_session: Any, fake_response: Any) -> None:
+    """The account id and username are parsed from /account/me."""
+    session = fake_session([fake_response(200, json_data=ACCOUNT_ITEM)])
+    api, _ = _client(session)
+
+    account = await api.async_get_account()
+
+    assert account == Account(id="account-1", username="eli@example.com")
+    method, url, kwargs = session.calls[0]
+    assert method == "GET"
+    assert url == f"{API_URL}/rest/v1/account/me"
+    assert kwargs["headers"]["Authorization"] == "Bearer access"
+    assert kwargs["headers"]["Accept"] == "application/json"
+
+
+async def test_get_account_invalid_payload(
+    fake_session: Any, fake_response: Any
+) -> None:
+    """A malformed account payload maps to SomTodayApiError."""
+    session = fake_session([fake_response(200, json_data=["nope"])])
+    api, _ = _client(session)
+
+    with pytest.raises(SomTodayApiError):
+        await api.async_get_account()
+
+
+# ---------------------------------------------------------------------------
+# async_get_students
+# ---------------------------------------------------------------------------
 async def test_get_students_parses_items(
     fake_session: Any, fake_response: Any
 ) -> None:
@@ -128,7 +162,7 @@ async def test_get_students_server_error(
     fake_session: Any, fake_response: Any
 ) -> None:
     """A 5xx response maps to SomTodayApiError."""
-    session = fake_session([fake_response(500)])
+    session = fake_session([fake_response(500, text="<html>oops</html>")])
     api, _ = _client(session)
 
     with pytest.raises(SomTodayApiError):
@@ -154,8 +188,9 @@ async def test_get_students_invalid_json(
     with pytest.raises(SomTodayApiError):
         await api.async_get_students()
 
+
 # ---------------------------------------------------------------------------
-# Config-flow slice: reactive refresh, response lifecycle and body errors.
+# Reactive refresh, response lifecycle and body errors.
 # ---------------------------------------------------------------------------
 class _BodyErrorResponse:
     """A response whose JSON body read raises a scripted error."""
@@ -167,6 +202,22 @@ class _BodyErrorResponse:
         self.release_count = 0
 
     async def json(self, *args: Any, **kwargs: Any) -> Any:
+        raise self._error
+
+    def release(self) -> None:
+        self.release_count += 1
+
+
+class _TextErrorResponse:
+    """A response whose diagnostic text read raises a scripted error."""
+
+    def __init__(self, error: Exception, status: int = 500) -> None:
+        self._error = error
+        self.status = status
+        self.headers: dict[str, str] = {}
+        self.release_count = 0
+
+    async def text(self) -> str:
         raise self._error
 
     def release(self) -> None:
@@ -265,10 +316,40 @@ async def test_get_students_body_read_error(fake_session: Any) -> None:
         await api.async_get_students()
 
 
+async def test_error_response_releases_and_logs_diagnostics(
+    fake_session: Any, fake_response: Any
+) -> None:
+    """A 5xx response is released even though its body is read for diagnostics."""
+    response = fake_response(
+        500,
+        headers={"Location": "https://example.com/error"},
+        text="<html>error</html>",
+    )
+    session = fake_session([response])
+    api, _ = _client(session)
+
+    with pytest.raises(SomTodayApiError):
+        await api.async_get_students()
+
+    assert response.release_count == 1
+
+
+async def test_error_response_text_read_error(fake_session: Any) -> None:
+    """A failing diagnostic body read does not mask the HTTP error."""
+    response = _TextErrorResponse(aiohttp.ClientError("boom"))
+    session = fake_session([response])
+    api, _ = _client(session)
+
+    with pytest.raises(SomTodayApiError):
+        await api.async_get_students()
+
+    assert response.release_count == 1
+
+
 def test_build_headers_without_tokens(fake_session: Any) -> None:
     """Without tokens no Authorization header is sent."""
     session = fake_session([])
-    auth = SomTodayAuthClient(session, TENANT)
+    auth = SomTodayAuth(session)
     api = SomTodayApiClient(session, auth, API_URL)
 
     assert api._build_headers() == {"Accept": "application/json"}
@@ -280,8 +361,7 @@ async def test_send_post_uses_session_post(
     """A non-GET method is dispatched through ``session.post``."""
     response = fake_response(200, json_data={"ok": True})
     session = fake_session([response])
-    auth = SomTodayAuthClient(session, TENANT)
-    auth.tokens = _tokens()
+    auth = SomTodayAuth(session, tokens=_tokens())
     api = SomTodayApiClient(session, auth, API_URL)
 
     result = await api._send("POST", "/rest/v1/foo", params={"a": "b"})
@@ -291,6 +371,7 @@ async def test_send_post_uses_session_post(
     assert method == "POST"
     assert url == f"{API_URL}/rest/v1/foo"
     assert kwargs["params"] == {"a": "b"}
+
 
 def test_release_ignores_response_without_release() -> None:
     """A response object without ``release`` is tolerated (no AttributeError)."""

@@ -1,56 +1,73 @@
 # Architecture: SomToday Home Assistant Integration
 
 > Technical design for the SomToday custom component.
-> Author: architect-agent (per `AGENTS.md`). Status: **Proposed v1**.
+> Author: architect-agent (per `AGENTS.md`). Status: **Proposed v2 — authentication revision**.
 > Source of truth for the API: <https://github.com/elisaado/somtoday-api-docs>.
+> The browser authorization-code + PKCE flow follows the MIT-licensed
+> `jonisnet/ha-somtoday` integration.
 
 ## 0. Scope
 
 This document describes the integration structure, the SomToday API endpoints,
-the OAuth2 login flow, the entity model and the error handling. It supersedes
-the earlier draft: that draft referenced endpoints that do not exist
-(`/rest/v1/leerlingen/{id}/rooster`, `/huiswerk`, `/cijfers`) and omitted the
-mandatory `client_id` and PKCE. See [§14](#14-corrections-to-the-previous-draft).
+the OAuth2 login flow, the entity model and the error handling.
 
-## 1. Focus finding: does the authorization API require a client ID?
+**This revision implements the authentication layer only.** The
+`DataUpdateCoordinator` and the entity platforms (`sensor`, `binary_sensor`,
+`calendar`) are deferred to a later revision; their design is retained in §5–§8
+as forward reference but is out of scope for the current code change.
 
-**Yes. A `client_id` is mandatory in every authorize, token and refresh
-request. No `client_secret` is required.**
+Three verified facts (2026-09-11) invalidate the previous draft:
+
+1. `GET https://servers.somtoday.nl/organisaties.json` no longer exists — it
+   returns `301` to `https://inloggen.somtoday.nl`, which redirects into the
+   login HTML. SomToday removed the school-list endpoint in February 2025
+   (elisaado/somtoday-api-docs issue #42). There is therefore **no school-list
+   / tenant-discovery step** and **no `tenant_uuid`** in the authorize request.
+2. The OAuth2 **password grant is disabled**
+   ("Password grant is disabled for insecure clients").
+3. Server-side login-form scraping (POSTing to `0-1.-panel-signInForm` / the
+   password form) is fragile and fails at SSO/MFA schools.
+
+The chosen replacement is a **browser-based authorization-code + PKCE** flow
+matching the MIT-licensed `jonisnet/ha-somtoday` integration (see
+[§3](#3-authentication--oauth2-flow)). See
+[§14](#14-corrections-to-the-previous-draft) for the corrections.
+
+## 1. Focus finding: public OAuth2 client, no secret, no school list
+
+**The client ID is a mandatory public constant. There is no client secret and
+no school-list endpoint.**
 
 Evidence:
 
 1. **Documentation** (`Authentication.md`) lists `client_id` as a required
-   parameter in all flows:
+   parameter in the authorization-code and refresh flows:
 
    | Request | `client_id` |
    |---------|-------------|
    | `GET https://inloggen.somtoday.nl/oauth2/authorize` (app/webapp, PKCE) | `somtoday-leerling-native` |
    | `POST https://inloggen.somtoday.nl/oauth2/token` (code exchange, PKCE) | `somtoday-leerling-native` |
-   | `GET https://somtoday.nl/oauth2/authorize` (SSO) | `D50E0C06-32D1-4B41-A137-A9A850C892C2` |
-   | `POST https://somtoday.nl/oauth2/token` (SSO code exchange) | `D50E0C06-32D1-4B41-A137-A9A850C892C2` |
-   | `POST https://somtoday.nl/oauth2/token` (legacy `grant_type=password`) | `D50E0C06-32D1-4B41-A137-A9A850C892C2` |
    | `POST https://inloggen.somtoday.nl/oauth2/token` (refresh, PKCE) | `somtoday-leerling-native` |
-   | `POST https://somtoday.nl/oauth2/token` (refresh, password grant) | `D50E0C06-32D1-4B41-A137-A9A850C892C2` |
+   | `POST https://somtoday.nl/oauth2/token` (legacy password / SSO) | `D50E0C06-32D1-4B41-A137-A9A850C892C2` |
 
-2. **Live check** (2026-09-11): `GET https://inloggen.somtoday.nl/oauth2/authorize`
-   with a valid `response_type`, `scope`, `redirect_uri`, `state`,
-   `code_challenge` and `code_challenge_method`, but **without** `client_id`,
-   returns **HTTP 400**. Adding `client_id=somtoday-leerling-native` makes the
-   endpoint proceed to the identity-provider login (the fetch tool could not
-   follow the `somtoday://` custom-scheme redirect, but the 400 disappears).
+2. **Live check** (2026-09-11): the authorize endpoint returns **HTTP 400**
+   without `client_id`, and proceeds to the identity-provider login when
+   `client_id=somtoday-leerling-native` is supplied.
 
-Nuances that shape the design:
+Consequences for the design:
 
-- **No client secret.** Since April 2021 SomToday uses *public* OAuth2 clients;
-  PKCE (`code_challenge_method=S256`) replaces the secret. The docs explicitly
-  state the former `client_secret` is no longer needed.
-- **The client ID is a public constant, not user input.** The config flow must
-  **not** ask the user for a client ID. It ships as `const.py` constant.
-- Two public client IDs are known; v1 uses `somtoday-leerling-native` because it
-  is the one paired with the current app/webapp PKCE flow.
-- Some schools authenticate via an external IdP (`oidcurls` in
-  `organisaties.json`). Those **SSO-only** accounts cannot be completed
-  server-side and are out of scope for v1 (see [§12](#12-limitations--open-questions)).
+- **No client secret.** SomToday has used *public* OAuth2 clients since April
+  2021; PKCE (`code_challenge_method=S256`) replaces the secret.
+- **The client ID is a public constant, not user input.** It ships as a
+  `const.py` constant; the config flow never asks for it. v1 uses
+  `somtoday-leerling-native`.
+- **No school-list endpoint.** `organisaties.json` was removed (Feb 2025). The
+  authorize URL therefore **omits `tenant_uuid`**, and SomToday presents its
+  own school picker in the browser. School/tenant selection happens on
+  SomToday's side, not in our config flow.
+- **No password grant, no server-side form scraping.** The password grant is
+  disabled and form scraping breaks at SSO/MFA schools. Authentication is
+  browser-based (see [§3](#3-authentication--oauth2-flow)).
 
 ## 2. Overview and design goals
 
@@ -59,9 +76,10 @@ exposes it as Home Assistant entities. It follows the standard HA integration
 framework:
 
 - `ConfigFlow` + `OptionsFlow` for configuration (`config_flow.py`).
-- `DataUpdateCoordinator` polling every **15 minutes** by default (`coordinator.py`).
+- `DataUpdateCoordinator` polling every **15 minutes** by default
+  (`coordinator.py`) — future work in this revision.
 - An OO API client with an **injectable `aiohttp.ClientSession`** (`api.py`).
-- Platforms: `sensor`, `binary_sensor`, `calendar`.
+- Platforms: `sensor`, `binary_sensor`, `calendar` — future work.
 - All parsing isolated in a typed model layer (`models.py`) so entities never
   touch raw JSON.
 
@@ -71,11 +89,12 @@ Design principles:
    `CoordinatorEntity`, `has_entity_name`, translation keys).
 2. No third-party runtime dependency: use HA's shared `aiohttp` session. This
    keeps `manifest.json` `requirements` empty and simplifies testing.
-3. Pure separation: **auth** (`SomTodayAuthClient`) / **transport**
+3. Pure separation: **auth** (`SomTodayAuth`) / **transport**
    (`SomTodayApiClient`) / **parsing** (`models.py`) / **orchestration**
    (`coordinator.py`) / **presentation** (platforms).
-4. Secrets are minimised: the password is used once during the config flow and
-   never stored; only the refresh token is persisted.
+4. Secrets are minimised: the authorization code and PKCE verifier are used
+   once during the config flow and never stored; only the refresh token is
+   persisted.
 
 ### Component diagram
 
@@ -92,7 +111,7 @@ package "Home Assistant Core" {
 package "custom_components/sometoday" {
   [__init__.py\nsetup / unload] as INIT
   [api.py\nSomTodayApiClient] as API
-  [auth.py\nSomTodayAuthClient] as AUTH
+  [auth.py\nSomTodayAuth] as AUTH
   [models.py\nparsers + dataclasses] as MODELS
   [coordinator.py\nSomTodayDataUpdateCoordinator] as COORD
   [sensor.py] as SENSOR
@@ -100,22 +119,29 @@ package "custom_components/sometoday" {
   [calendar.py] as CAL
 }
 
+actor User
+cloud "User's Browser" {
+  [Browser] as BR
+}
+
 cloud "SomToday" {
   [inloggen.somtoday.nl] as IDP
   [api.somtoday.nl] as REST
-  [servers.somtoday.nl] as SRV
 }
 
-CF --> AUTH : login / reauth
-OF --> COORD : scan interval
+CF --> AUTH : exchange pasted code / reauth
+CF --> BR : show authorize URL
+User --> BR : log in (SSO/MFA ok)
+User --> CF : paste redirect URL / code
+OF --> COORD : scan interval (reload)
 INIT --> AUTH
 INIT --> API
 INIT --> COORD
 INIT --> SENSOR
 INIT --> BIN
 INIT --> CAL
-AUTH --> IDP : OAuth2 + PKCE
-AUTH --> SRV : school list
+AUTH --> IDP : OAuth2 + PKCE (token)
+BR --> IDP : OAuth2 + PKCE (authorize)
 API --> REST : REST v1
 COORD --> API
 COORD --> AUTH : ensure valid token
@@ -128,36 +154,38 @@ CAL --> MODELS
 ### Class model
 
 ```text
-SomTodayAuthClient
+SomTodayAuth
   - session: aiohttp.ClientSession
-  - tenant_uuid: str
   - client_id: str = "somtoday-leerling-native"
   - tokens: SomTodayTokens | None
-  + async_login(username, password) -> SomTodayTokens
-  + async_refresh() -> SomTodayTokens
+  - _code_verifier: str | None
+  - _state: str | None
+  + build_authorize_url() -> str
+  + extract_code(pasted: str) -> str
+  + async_exchange_code(code: str) -> SomTodayTokens
+  + async_refresh_tokens() -> SomTodayTokens
   + async_ensure_valid() -> None
-  - _async_pkce_login(username, password) -> SomTodayTokens
-  - _async_password_grant(username, password) -> SomTodayTokens   # fallback
   - _generate_pkce_pair() -> tuple[str, str]
-  - _extract_code(location: str) -> str
+  - _generate_state() -> str
 
 SomTodayApiClient
   - session: aiohttp.ClientSession
-  - auth: SomTodayAuthClient
+  - auth: SomTodayAuth
   - base_url: str
-  + async_get_students() -> list[Student]
-  + async_get_schedule(start, end) -> list[Lesson]
-  + async_get_grades(student_id) -> list[Grade]
-  + async_get_homework(since) -> list[HomeworkItem]
-  + async_get_absence(start, end) -> list[Absence]
-  + async_get_subjects() -> list[Subject]
+  + async_get_account() -> Account
+  + async_get_students() -> list[Student]           # future work
+  + async_get_schedule(start, end) -> list[Lesson]  # future work
+  + async_get_grades(student_id) -> list[Grade]     # future work
+  + async_get_homework(since) -> list[HomeworkItem] # future work
+  + async_get_absence(start, end) -> list[Absence]  # future work
+  + async_get_subjects() -> list[Subject]           # future work
   - _request(method, path, **kwargs) -> dict          # injects auth + Accept
   - _request_paginated(path, page_size=100) -> list   # Range: items=0-99
 
-SomTodayDataUpdateCoordinator(DataUpdateCoordinator[SomTodayData])
+SomTodayDataUpdateCoordinator(DataUpdateCoordinator[SomTodayData])   # future work
   + _async_update_data() -> SomTodayData
 
-SomTodayData (dataclass)
+SomTodayData (dataclass)                                            # future work
   + students: list[Student]
   + schedule: list[Lesson]
   + grades: list[Grade]
@@ -172,81 +200,88 @@ SomTodayData (dataclass)
 
 ### 3.1 Chosen strategy
 
-**Primary: PKCE authorization-code flow mimicking the SomToday app/webapp.**
-This is the documented current method. It runs entirely server-side with
-`aiohttp` (no browser), which is required because HA config flows cannot open a
-browser to a custom-scheme redirect.
+**Browser-based authorization-code + PKCE.** The user logs in through SomToday's
+own login page in *their* browser (which handles SSO and MFA correctly) and
+pastes the resulting authorization code back into Home Assistant. HA then
+exchanges the code server-side.
 
-**Fallback: legacy password grant** (`grant_type=password`,
-`client_id=D50E...`). It is simpler and server-side, but the docs label it
-"Possibly deprecated". It is kept behind the same `SomTodayAuthClient`
-interface and only attempted if the PKCE flow fails with an unsupported-school
-condition. It must not be the default.
+This mirrors the MIT-licensed `jonisnet/ha-somtoday` integration and avoids
+every server-side approach SomToday has since disabled or broken (password
+grant disabled; school-list endpoint removed; form scraping fragile). Because
+the browser handles the identity provider, there is a single strategy for all
+schools/accounts — no per-school `auth_method` is needed (unlike the previous
+draft).
 
-The strategy is selected per school/account; the chosen method is stored in the
-config entry (`auth_method`).
+### 3.2 Authorization-code flow (browser + paste)
 
-### 3.2 PKCE flow (primary)
-
-1. **School discovery** — `GET https://servers.somtoday.nl/organisaties.json`.
-   Returns `instellingen[]` with `uuid` (tenant UUID), `naam`, `plaats` and
-   optional `oidcurls`.
-2. **Generate PKCE pair** — `code_verifier` = 128 chars from
-   `[a-z1-9]`; `code_challenge` = base64url(SHA-256(verifier)) with
-   `=` stripped.
-3. **Authorize** — `GET https://inloggen.somtoday.nl/oauth2/authorize` with
-   `redirect_uri=somtoday://nl.topicus.somtoday.leerling/oauth/callback`,
-   `client_id=somtoday-leerling-native`, `response_type=code`, `state=<8 chars>`,
-   `scope=openid`, `tenant_uuid=<uuid>`, `session=no_session`,
-   `code_challenge`, `code_challenge_method=S256`.
-   Do **not** follow redirects. Capture the `production-authenticator-stickiness`
-   cookie and the `Location` header (`...?auth=<authorization_code>`).
-4. **Establish session** — `GET https://inloggen.somtoday.nl/` with the `auth`
-   query parameter and the stickiness cookie; do not follow redirects. Capture
-   `JSESSIONID`.
-5. **Username step** — `POST https://inloggen.somtoday.nl/0-1.-panel-signInForm`
-   with `usernameFieldPanel:usernameFieldPanel_body:usernameField=<username>`,
-   `auth`, `Origin` and cookies. Inspect the `Location` header:
-   - `auth` present → **username + password** flow (both fields in one POST).
-   - otherwise → **username-first** flow (username already submitted).
-6. **Password step** —
-   - username-first: `POST https://inloggen.somtoday.nl/login?2-1.-passwordForm`
-     with `passwordFieldPanel:passwordFieldPanel_body:passwordField=<password>`.
-   - username + password: `POST https://inloggen.somtoday.nl/?0-1.-panel-signInForm`
-     with both the username and password fields.
-   Do not follow redirects; parse `code` (the final authorization code) from the
-   `Location` header.
-7. **Exchange** — `POST https://inloggen.somtoday.nl/oauth2/token` with
-   `grant_type=authorization_code`, `code`, `code_verifier`,
-   `client_id=somtoday-leerling-native`, `tenant_uuid`, `session=no_session`,
-   `scope=openid`.
-8. **Store** the response:
-   `access_token`, `refresh_token`, `somtoday_api_url`,
-   `somtoday_tenant`, `expires_in` (typically 3600 s).
-   Only `refresh_token`, `api_url`, `tenant_uuid` and account metadata are
-   persisted; the password is discarded.
+1. **Generate PKCE pair + state.**
+   - `code_verifier`: 43–128 chars from the RFC 7636 unreserved set
+     `[A-Za-z0-9\-._~]`.
+   - `code_challenge` = base64url(SHA-256(verifier)) with padding stripped.
+   - `state`: a fresh random token (≥ 128 bits) generated per flow and stored
+     on the flow object.
+2. **Build the authorize URL** (`SomTodayAuth.build_authorize_url()`) at
+   `https://inloggen.somtoday.nl/oauth2/authorize` with:
+   - `redirect_uri=somtoday://nl.topicus.somtoday.leerling/oauth/callback`
+   - `client_id=somtoday-leerling-native`
+   - `response_type=code`
+   - `scope=openid`
+   - `session=no_session`
+   - `state=<generated>`
+   - `code_challenge=<challenge>`
+   - `code_challenge_method=S256`
+   - **`tenant_uuid` is omitted** so SomToday shows its own school picker.
+3. **User logs in** in their own browser (SSO/MFA work). On success the browser
+   is redirected to the `somtoday://` custom scheme, which Home Assistant cannot
+   receive. The user copies the failed redirect URL from the address bar (or
+   the `Location:` header from DevTools, or a bare `code`) and pastes it into
+   the config flow.
+4. **Extract the code** (`SomTodayAuth.extract_code(pasted)`), forgivingly:
+   - If the pasted string contains a `code` query parameter (e.g. the full
+     `somtoday://…callback?code=…&state=…` URL), parse and return it.
+   - Otherwise, treat the trimmed input as a bare code.
+   - Best-effort `state` validation: if a `state` parameter is present it must
+     match the generated state; a mismatch is a definitive rejection (the code
+     must not be trusted). If no `state` is present (bare code / partial
+     paste), skip the check and rely on the token exchange.
+5. **Exchange the code** (`SomTodayAuth.async_exchange_code(code)`) at
+   `POST https://inloggen.somtoday.nl/oauth2/token` with
+   `Content-Type: application/x-www-form-urlencoded`,
+   `Accept: application/json`, and body:
+   - `grant_type=authorization_code`
+   - `code`
+   - `code_verifier`
+   - `client_id=somtoday-leerling-native`
+   - `scope=openid`
+   - `session=no_session` (mirrors the authorize request)
+6. **Store the response**: `access_token`, `refresh_token`,
+   `somtoday_api_url`, `somtoday_tenant`, `expires_in` (typically 3600 s). If
+   the response omits `somtoday_api_url`, keep the previously known value. Only
+   the refresh token, `api_url` and account metadata are persisted; the code
+   and verifier are discarded.
 
 ```plantuml
 @startuml
 actor User
+participant "Browser" as BR
 participant "Config Flow" as CF
-participant "SomTodayAuthClient" as AC
+participant "SomTodayAuth" as AC
 participant "inloggen.somtoday.nl" as IDP
-participant "servers.somtoday.nl" as SRV
 
-User -> CF : school, username, password
-CF -> SRV : GET organisaties.json
-SRV --> CF : schools + tenant_uuid
-CF -> AC : async_login(tenant_uuid, username, password)
-AC -> AC : generate code_verifier + code_challenge
-AC -> IDP : GET /oauth2/authorize (client_id, PKCE)
-IDP --> AC : 302 + stickiness cookie + Location?auth=
-AC -> IDP : GET /?auth=... (no redirect)
-IDP --> AC : 200 + JSESSIONID
-AC -> IDP : POST /0-1.-panel-signInForm (username)
-IDP --> AC : 302 (flow detection)
-AC -> IDP : POST password step
-IDP --> AC : 302 callback?code=final_code
+User -> CF : start setup
+CF -> AC : build_authorize_url()
+AC --> CF : authorize URL (PKCE + state)
+CF -> User : show link "open in browser"
+User -> BR : open authorize URL
+BR -> IDP : GET /oauth2/authorize (client_id, PKCE, no tenant_uuid)
+IDP --> BR : school picker + login (SSO/MFA ok)
+User -> BR : log in
+IDP --> BR : 302 somtoday://...callback?code=...&state=...
+BR --> User : custom-scheme redirect not handled
+User -> CF : paste redirect URL / code
+CF -> AC : extract_code(pasted)
+AC --> CF : code (+ best-effort state check)
+CF -> AC : async_exchange_code(code)
 AC -> IDP : POST /oauth2/token (code + code_verifier + client_id)
 IDP --> AC : access_token, refresh_token, api_url, expires_in
 AC --> CF : SomTodayTokens
@@ -254,39 +289,46 @@ CF -> CF : create entry (store refresh_token only)
 @enduml
 ```
 
-### 3.3 Token refresh
+### 3.3 Exchange result handling
+
+The token-exchange HTTP result maps to one of three outcomes:
+
+| Outcome | Condition | Reaction |
+|---------|-----------|----------|
+| Success | HTTP 200 + JSON tokens | proceed to account discovery (§4) |
+| Definitive rejection | HTTP 400 with `error=invalid_grant` | raise `SomtodayInvalidAuth` → `invalid_auth` / reauth |
+| Retryable | any other non-200, network error, malformed body | `SomTodayConnectionError`/`SomTodayApiError` → retry / not ready |
+
+Only `invalid_grant` is treated as a definitive rejection: it means the code
+was already used, expired, or is otherwise invalid, so re-pasting the same code
+can never succeed and the flow must escalate. Every other failure (transient
+network, 5xx, malformed JSON) stays retryable so the user can retry without
+restarting the flow.
+
+### 3.4 Token refresh
 
 - `SomTodayTokens.expires_at = utcnow() + expires_in`.
 - `async_ensure_valid()` refreshes proactively when
-  `expires_at - now < 120 s`, and `SomTodayApiClient` refreshes **reactively**
-  once on a `401`.
-- Refresh call: `POST https://inloggen.somtoday.nl/oauth2/token` with
-  `grant_type=refresh_token`, `refresh_token`, `client_id=somtoday-leerling-native`
-  (or the client ID of the method used), `scope=openid`.
-- **Rotating refresh tokens:** the response contains a new `refresh_token`. The
-  coordinator writes it back atomically:
+  `expires_at - now < 120 s`; `SomTodayApiClient` refreshes reactively once on
+  a `401`.
+- `SomTodayAuth.async_refresh_tokens()`: `POST
+  https://inloggen.somtoday.nl/oauth2/token` with `grant_type=refresh_token`,
+  `refresh_token`, `client_id=somtoday-leerling-native`, `scope=openid`.
+- **Rotating refresh tokens:** the response *may* contain a new
+  `refresh_token`. If it does, persist it (via
+  `hass.config_entries.async_update_entry`); if it does **not**, keep the old
+  refresh token. Refresh is serialised with an `asyncio.Lock` to avoid
+  concurrent rotations.
 
-  ```python
-  self.hass.config_entries.async_update_entry(
-      entry, data={**entry.data, CONF_REFRESH_TOKEN: new_refresh_token}
-  )
-  ```
-
-  Without this, the integration breaks after the first refresh. Refresh is
-  serialised with an `asyncio.Lock` to avoid concurrent rotations.
-
-### 3.4 Config entry data / options
+### 3.5 Config entry data / options
 
 **`entry.data`** (secrets minimised):
 
 ```json
 {
-  "tenant_uuid": "099ce144-c400-4468-95d4-ad36f9f5cb5c",
-  "school_name": "Etty Hillesum Lyceum",
-  "username": "450000@live.bc-enschede.nl",
-  "auth_method": "pkce",
   "refresh_token": "<secret>",
   "api_url": "https://api.somtoday.nl",
+  "account_id": "<id from /rest/v1/account/me>",
   "student_id": 1234,
   "student_name": "Eli Saado"
 }
@@ -307,8 +349,8 @@ CF -> CF : create entry (store refresh_token only)
 
 > **Security note.** HA stores config entries in `.storage/core.config_entries`
 > as plaintext JSON; the refresh token is therefore not encrypted. This is the
-> standard HA limitation. The password is never stored. Document this to the
-> user and recommend restricting `.storage/` permissions.
+> standard HA limitation. No password is stored. Document this to the user and
+> recommend restricting `.storage/` permissions.
 
 ## 4. Config flow
 
@@ -318,32 +360,46 @@ CF -> CF : create entry (store refresh_token only)
 
 | Step | Purpose | Input | Errors |
 |------|---------|-------|--------|
-| `async_step_user` | Select school | `SelectSelector` populated from `organisaties.json` (searchable) | `cannot_connect` |
-| `async_step_credentials` | Log in | `username` (`TextSelector`), `password` (`TextSelectorType.PASSWORD`) | `invalid_auth`, `cannot_connect`, `sso_not_supported` |
-| `async_step_student` | Pick student if `/rest/v1/leerlingen` returns > 1 | `SelectSelector` | `no_students` |
-| `async_step_reauth` → `async_step_reauth_confirm` | Re-login after `ConfigEntryAuthFailed` | `password` (username prefilled) | `invalid_auth`, `cannot_connect` |
+| `async_step_user` | Show authorize URL + collect pasted redirect/code | multi-line `TextSelector` for the pasted URL/code | `invalid_auth`, `cannot_connect` |
+| `async_step_reauth` → `async_step_reauth_confirm` | Re-auth after `ConfigEntryAuthFailed` | pasted redirect/code | `invalid_auth`, `cannot_connect` |
 | `async_step_init` (options) | Change poll interval / feature toggles | number + booleans | — |
 
 Details:
 
-- **Duplicate detection:** `async_set_unique_id(f"{tenant_uuid}:{username}")`
-  and `_abort_if_unique_id_configured()` → abort `already_configured`.
-- **Validation:** after a successful login the flow calls
-  `GET /rest/v1/leerlingen` once. Success creates the entry; failure maps to
-  `invalid_auth`/`cannot_connect`.
-- **Reauth:** `entry.data[CONF_USERNAME]` is used to re-run the login; on
-  success the refresh token (and API URL) are updated in place.
+- **Single step.** There is no school selection and no credential form. The
+  flow builds the authorize URL (with a fresh PKCE pair + `state` stored on the
+  flow), presents it to the user, and asks them to paste back the redirect URL
+  or code.
+- **Chrome / custom-scheme guidance.** Chrome discards custom-scheme redirects,
+  so after a successful login the address bar may be empty or show an error.
+  The UI instructs the user to either copy the address bar *before* Chrome
+  discards the `somtoday://` URL, or open **DevTools → Network**, find the
+  request to the callback, and copy the `Location:` header value
+  (`somtoday://nl.topicus.somtoday.leerling/oauth/callback?code=…`). A bare
+  `code` is also accepted.
+- **Duplicate detection:** after a successful exchange, call
+  `GET /rest/v1/account/me` to obtain the account id; fall back to the student
+  id from `GET /rest/v1/leerlingen`. Use it as the unique id and
+  `_abort_if_unique_id_configured()` → `already_configured`.
+- **Reauth:** `entry.data` holds only the refresh token (plus API URL/account
+  metadata); re-running the browser-paste flow updates the tokens in place. No
+  username is stored to prefill.
 - **Options:** validated with
   `vol.All(vol.Coerce(int), vol.Range(min=MIN_SCAN_INTERVAL, max=MAX_SCAN_INTERVAL))`
-  and applied via `async_create_task(coordinator.async_refresh())` /
-  `entry.options` update without a restart.
+  and applied by reloading the entry with
+  `hass.config_entries.async_schedule_reload(entry.entry_id)` — no update
+  listener.
 
 ### 4.2 UI strings
 
-All labels/errors are defined as translation keys in `strings.json` (English)
-and `translations/nl.json` (Dutch). No hard-coded user-facing strings.
+All labels/errors are translation keys in `strings.json` (English) and
+`translations/nl.json` (Dutch). No hard-coded user-facing strings. The
+authorize-URL step and the paste/DevTools instructions are localised here.
 
 ## 5. DataUpdateCoordinator
+
+> **Future work.** Not implemented in this revision (authentication only).
+> Retained as forward reference.
 
 ```text
 SomTodayDataUpdateCoordinator(DataUpdateCoordinator[SomTodayData])
@@ -370,29 +426,26 @@ SomTodayDataUpdateCoordinator(DataUpdateCoordinator[SomTodayData])
   1440, configurable via options.
 - **First refresh:** `await coordinator.async_config_entry_first_refresh()` in
   `async_setup_entry`; failure aborts setup with the standard HA behaviour.
-- **Optimisation:** schedule and grades change slowly. A simple modulo counter
-  can fetch grades every 4th poll; v1 may fetch everything each poll (the
-  endpoints are cheap). Keep the interval conservative to avoid rate limiting.
 - **Serialisation:** a single `asyncio.Lock` prevents overlapping refresh + token
   rotation.
 - **Cross-poll state:** `new_grade` (see [§8.2](#82-binary_sensor-platform))
   cannot be derived from a single response. The coordinator keeps
   `self._last_grade_ids: set` across polls and populates
   `SomTodayData.new_grades` with the grades whose IDs were not seen in the
-  previous poll. The entity is then a pure renderer of that list; the first
-  refresh yields no new grades.
+  previous poll.
 
 ### 5.1 Error mapping
 
-| Condition | Raised in client | Coordinator reaction |
-|-----------|------------------|----------------------|
-| `401` / `403` | `SomTodayAuthError` | refresh once; still failing → `ConfigEntryAuthFailed` |
-| Invalid credentials during flow | `SomTodayAuthError` | config flow shows `invalid_auth` |
+| Condition | Raised in client | Reaction |
+|-----------|------------------|----------|
+| HTTP 400 `error=invalid_grant` (token exchange) | `SomtodayInvalidAuth` | config flow shows `invalid_auth`; runtime → `ConfigEntryAuthFailed` (reauth) |
+| `state` mismatch in pasted redirect | `ValueError("state_mismatch")` | config flow shows `state_mismatch` |
+| `401` / `403` from data API | `SomTodayAuthError` | refresh once; still failing → `ConfigEntryAuthFailed` |
+| Other token-exchange non-200 / malformed | `SomTodayConnectionError`/`SomTodayApiError` | retryable — flow shows `cannot_connect` and stays in step |
 | Network error / timeout | `SomTodayConnectionError` | `UpdateFailed` → retry next cycle |
 | `429 Too Many Requests` | `SomTodayRateLimitError` | `UpdateFailed`, honour `Retry-After` if present |
 | `5xx` | `SomTodayApiError` | `UpdateFailed` → retry next cycle |
 | Malformed JSON / unexpected schema | `SomTodayApiError` | `UpdateFailed` → retry next cycle |
-| SSO-only school | `SomTodaySsoNotSupported` | config flow aborts with `sso_not_supported` |
 
 HA's coordinator already applies exponential backoff after repeated
 `UpdateFailed`s; no custom backoff is needed.
@@ -407,7 +460,7 @@ class SomTodayApiClient:
     def __init__(
         self,
         session: aiohttp.ClientSession,
-        auth: SomTodayAuthClient,
+        auth: SomTodayAuth,
         base_url: str,
     ) -> None: ...
 ```
@@ -417,12 +470,17 @@ class SomTodayApiClient:
 - `_request` maps HTTP status codes to the exception hierarchy in §5.1.
 - `_request_paginated` walks `Range: items=<start>-<end>` in blocks of 100 until
   fewer than 100 records are returned (used by the grades endpoint).
+- `async_get_account()` calls `GET /rest/v1/account/me` and is used by the
+  config flow to derive the unique id (fall back to the student id from
+  `/rest/v1/leerlingen`).
 - Parsing lives in `models.py`; the client returns typed dataclasses
-  (`Student`, `Lesson`, `Grade`, `HomeworkItem`, `Absence`, `Subject`).
+  (`Student`, `Lesson`, `Grade`, `HomeworkItem`, `Absence`, `Subject`, `Account`).
 
-`auth.py` — `SomTodayAuthClient` owns `SomTodayTokens` and the PKCE/password
-strategies. It depends only on an injectable `aiohttp.ClientSession` and the
-tenant UUID, so the OAuth2 flow is unit-testable without network access.
+`auth.py` — `SomTodayAuth` owns `SomTodayTokens` and the browser PKCE strategy.
+It depends only on an injectable `aiohttp.ClientSession`, so the OAuth2 flow is
+unit-testable without network access. `exceptions.py` adds `SomtodayInvalidAuth`
+(subclass of `SomTodayAuthError`) for the definitive `invalid_grant` / `state`
+mismatch rejection.
 
 ## 7. SomToday API endpoints
 
@@ -433,18 +491,19 @@ Base URL for data requests = `somtoday_api_url` returned by the token endpoint
 
 | Method | URL | Purpose |
 |--------|-----|---------|
-| GET | `https://servers.somtoday.nl/organisaties.json` | School list (`uuid`, `naam`, `plaats`, `oidcurls`) |
-| GET | `https://inloggen.somtoday.nl/oauth2/authorize` | Start PKCE flow |
-| POST | `https://inloggen.somtoday.nl/0-1.-panel-signInForm` | Username / flow detection |
-| POST | `https://inloggen.somtoday.nl/login?2-1.-passwordForm` | Password (username-first) |
-| POST | `https://inloggen.somtoday.nl/?0-1.-panel-signInForm` | Username + password |
+| GET | `https://inloggen.somtoday.nl/oauth2/authorize` | Authorize (browser, PKCE, **no `tenant_uuid`**) |
 | POST | `https://inloggen.somtoday.nl/oauth2/token` | Code exchange + refresh |
-| POST | `https://somtoday.nl/oauth2/token` | Legacy password / SSO (fallback) |
+
+`https://servers.somtoday.nl/organisaties.json` is **gone** (301 → login HTML,
+removed Feb 2025). The form-scraping POSTs (`0-1.-panel-signInForm`,
+`…/login?2-1.-passwordForm`, `/?0-1.-panel-signInForm`) and the legacy
+`somtoday.nl/oauth2/token` password/SSO endpoint are **not used**.
 
 ### 7.2 Data
 
 | Method | Path (relative to `api_url`) | Purpose | Key parameters |
 |--------|------------------------------|---------|----------------|
+| GET | `/rest/v1/account/me` | Account info (unique id) | `additional=restricties` |
 | GET | `/rest/v1/leerlingen` | Current student(s) | `additional=pasfoto` |
 | GET | `/rest/v1/leerlingen/{id}` | Student detail | — |
 | GET | `/rest/v1/afspraken` | Schedule | `sort=asc-id`, `additional=vak`, `additional=docentAfkortingen`, `additional=leerlingen`, `begindatum=YYYY-MM-DD`, `einddatum=YYYY-MM-DD` |
@@ -455,7 +514,6 @@ Base URL for data requests = `somtoday_api_url` returned by the token endpoint
 | GET | `/rest/v1/absentiemeldingen` | Absence reports | `begindatumtijd`, `einddatumtijd` |
 | GET | `/rest/v1/waarnemingen` | Attendance observations | `begintNaOfOp` / `beginDatumTijd` / `eindDatumTijd`, `isGeoorloofd` |
 | GET | `/rest/v1/vakken` | Subjects | — |
-| GET | `/rest/v1/account/me` | Account info | `additional=restricties` |
 | GET | `/rest/v1/icalendar` | iCal feed (alternative calendar source) | — |
 | PUT | `/rest/v1/swigemaakt/{id}` | Mark homework done (v2, optional) | body `{leerling, gemaakt}` |
 | PUT | `/rest/v1/swigemaakt/cou` | Mark homework done by `leerling` + `swiToekenningId` (v2, optional) | body `{leerling, swiToekenningId, gemaakt}` |
@@ -479,6 +537,8 @@ This mapping is normative for the `models.py` parsers.
 
 | Dataclass | Field | Source JSON |
 |-----------|-------|-------------|
+| `Account` | `id` | `links[0].id` |
+| | `username` | `username` (if present) |
 | `Student` | `id` | `links[0].id` |
 | | `leerlingnummer` | `leerlingnummer` |
 | | `roepnaam` | `roepnaam` |
@@ -525,6 +585,9 @@ This mapping is normative for the `models.py` parsers.
 calendar distinguish homework from tests (see [§8](#8-entity-model)).
 
 ## 8. Entity model
+
+> **Future work.** Not implemented in this revision (authentication only).
+> Retained as forward reference.
 
 One **device per config entry** (per student). All entities set
 `_attr_has_entity_name = True`, use translation keys, and share:
@@ -617,15 +680,11 @@ SomTodayEntity <|-- SomTodayCalendar
 
 ```text
 async_setup_entry(hass, entry):
-    auth = SomTodayAuthClient(
-        session,
-        entry.data[CONF_TENANT_UUID],
-        auth_method=entry.data.get(CONF_AUTH_METHOD),
-    )
+    auth = SomTodayAuth(session)
     auth.tokens = SomTodayTokens.from_entry(entry)
-    api = SomTodayApiClient(session, auth, entry.data["api_url"])
-    coordinator = SomTodayDataUpdateCoordinator(hass, entry, api, auth)
-    await coordinator.async_config_entry_first_refresh()
+    api = SomTodayApiClient(session, auth, entry.data[CONF_API_URL])
+    coordinator = SomTodayDataUpdateCoordinator(hass, entry, api, auth)   # future work
+    await coordinator.async_config_entry_first_refresh()                  # future work
     entry.runtime_data = SomTodayRuntimeData(api=api, auth=auth, coordinator=coordinator)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -633,10 +692,9 @@ async_unload_entry(hass, entry):
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 ```
 
-`CONF_AUTH_METHOD` restores the refresh host/client ID after a restart (see
-[§12.2](#12-limitations--open-questions)). When the rotating refresh token
-changes, persist `auth.as_entry_data()` (which includes `CONF_AUTH_METHOD`)
-rather than `tokens.as_entry_data()`.
+When the rotating refresh token changes, persist `auth.as_entry_data()`
+(refresh token + API URL + account metadata) rather than
+`tokens.as_entry_data()` (see [§12](#12-limitations--open-questions)).
 
 `entry.runtime_data` (modern HA pattern) is preferred over `hass.data[DOMAIN]`.
 `async_migrate_entry` is provided for future schema changes.
@@ -645,16 +703,13 @@ rather than `tokens.as_entry_data()`.
 
 ```python
 DOMAIN = "sometoday"
-PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.CALENDAR]
+PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.CALENDAR]  # future work
 
-CONF_TENANT_UUID = "tenant_uuid"
-CONF_SCHOOL_NAME = "school_name"
-CONF_USERNAME = "username"
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_API_URL = "api_url"
+CONF_ACCOUNT_ID = "account_id"
 CONF_STUDENT_ID = "student_id"
 CONF_STUDENT_NAME = "student_name"
-CONF_AUTH_METHOD = "auth_method"
 CONF_SCAN_INTERVAL = "scan_interval"
 CONF_SCHEDULE_DAYS_AHEAD = "schedule_days_ahead"
 CONF_HOMEWORK_DAYS_AHEAD = "homework_days_ahead"
@@ -668,16 +723,19 @@ MAX_SCAN_INTERVAL = 1440
 DEFAULT_SCHEDULE_DAYS_AHEAD = 14
 DEFAULT_HOMEWORK_DAYS_AHEAD = 7
 
-# Public OAuth2 clients (no secret; PKCE replaces it)
+# Public OAuth2 client (no secret; PKCE replaces it)
 CLIENT_ID_APP = "somtoday-leerling-native"
-CLIENT_ID_SSO = "D50E0C06-32D1-4B41-A137-A9A850C892C2"
 AUTHORIZE_URL = "https://inloggen.somtoday.nl/oauth2/authorize"
 TOKEN_URL = "https://inloggen.somtoday.nl/oauth2/token"
-SCHOOLS_URL = "https://servers.somtoday.nl/organisaties.json"
 REDIRECT_URI = "somtoday://nl.topicus.somtoday.leerling/oauth/callback"
 TOKEN_REFRESH_MARGIN = 120           # seconds
 GRADES_PAGE_SIZE = 100
 ```
+
+Removed from the previous draft: `CONF_TENANT_UUID`, `CONF_SCHOOL_NAME`,
+`CONF_USERNAME`, `CONF_AUTH_METHOD`, `CLIENT_ID_SSO` and `SCHOOLS_URL` — there
+is no school list, no stored username, no per-school auth method, and the
+legacy SSO/password client is no longer used.
 
 ## 11. File structure
 
@@ -689,16 +747,16 @@ custom_components/sometoday/
 ├── __init__.py          # Setup, runtime_data, entry unload, migrations
 ├── manifest.json        # Metadata + version
 ├── config_flow.py       # Config + options + reauth flow
-├── coordinator.py       # SomTodayDataUpdateCoordinator
+├── coordinator.py       # SomTodayDataUpdateCoordinator (future work)
 ├── api.py               # SomTodayApiClient (injectable session)
-├── auth.py              # SomTodayAuthClient (PKCE + password fallback)
-├── exceptions.py        # Shared error hierarchy (section 5.1)
+├── auth.py              # SomTodayAuth (browser authorization-code + PKCE)
+├── exceptions.py        # Shared error hierarchy + SomtodayInvalidAuth (§5.1)
 ├── models.py            # Dataclasses + parsers
-├── sensor.py            # Sensor entities
-├── binary_sensor.py     # Binary sensor entities
-├── calendar.py          # Calendar entity
-├── entity.py            # Shared SomTodayEntity base
-├── const.py             # Constants (CONF_*, DEFAULT_*, client IDs)
+├── sensor.py            # Sensor entities (future work)
+├── binary_sensor.py     # Binary sensor entities (future work)
+├── calendar.py          # Calendar entity (future work)
+├── entity.py            # Shared SomTodayEntity base (future work)
+├── const.py             # Constants (CONF_*, DEFAULT_*, client ID)
 ├── strings.json         # Translations (source of truth, EN)
 └── translations/
     ├── en.json          # English translations (loaded by HA)
@@ -720,7 +778,7 @@ requirements_test.txt    # Test dependencies (pytest, HA plugin, aioresponses)
 {
   "domain": "sometoday",
   "name": "SomToday",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "config_flow": true,
   "iot_class": "cloud_polling",
   "integration_type": "hub",
@@ -737,47 +795,60 @@ session. `version` is mandatory for custom components.
 
 ## 12. Limitations / open questions
 
-1. **SSO-only schools** (`oidcurls` present and no SomToday password) cannot be
-   completed without a browser and a registered redirect URI. v1 aborts with
-   `sso_not_supported`; a future version could accept a manually pasted refresh
-   token.
-2. **Refresh-token endpoint host.** The docs show refresh under
-   `https://somtoday.nl/oauth2/token` with the SSO client ID, while the app flow
-   uses `inloggen.somtoday.nl`. The implementation should try the host/client ID
-   matching the login method and persist which one worked. This is the main
-   uncertainty and needs validation with a real account during implementation.
-3. **Rotating refresh tokens** must be persisted; if SomToday does not rotate,
-   the write-back is a no-op.
-4. **Rate limits** are undocumented; the 5-minute minimum is a conservative
+1. **Refresh-token endpoint host.** The current flow uses
+   `inloggen.somtoday.nl/oauth2/token` for both code exchange and refresh.
+   Older documentation referenced `somtoday.nl/oauth2/token`, which is tied to
+   the legacy SSO/password client and is not used in this revision. This needs
+   validation against a real account during implementation.
+2. **Rotating refresh tokens** must be persisted when the response rotates
+   them; when it does not, the existing token is preserved (no-op write-back).
+3. **Rate limits** are undocumented; the 5-minute minimum is a conservative
    guess.
-5. **Multiple students** per account: v1 lets the user pick one at setup;
-   multi-student support is a future enhancement.
-6. **Write support** (`PUT /rest/v1/swigemaakt/{id}`) is out of scope for v1.
+4. **Multiple students** per account: the account id (from `/rest/v1/account/me`)
+   is the unique id; student selection/multi-student support is a future
+   enhancement.
+5. **Write support** (`PUT /rest/v1/swigemaakt/{id}`) is out of scope for v1.
 
 ## 13. Testing hooks (for the tester-agent)
 
-- `SomTodayApiClient` and `SomTodayAuthClient` accept an injected
+- `SomTodayApiClient` and `SomTodayAuth` accept an injected
   `aiohttp.ClientSession`, so HTTP is mocked with `aioresponses` and no real API
   call is ever made.
-- The PKCE flow is deterministic if `code_verifier`/`state` generation is
-  injectable; tests assert the exact authorize parameters and the token
-  exchange body.
-- Coordinator tests cover: successful update, `401` → refresh, refresh failure →
-  `ConfigEntryAuthFailed`, timeout/5xx → `UpdateFailed`, and rotating-token
-  persistence.
-- Entity tests cover state, attributes, device classes, unique IDs and
-  `unavailable` on `UpdateFailed`.
+- `build_authorize_url()` is deterministic if PKCE/`state` generation is
+  injectable; tests assert the exact authorize query (`client_id`, `scope`,
+  `code_challenge_method=S256`, `session=no_session`, and the **absence** of
+  `tenant_uuid`).
+- `extract_code()` is pure and tested against full redirect URLs, DevTools
+  `Location:` header values and bare codes, including the `state`-mismatch
+  rejection.
+- `async_exchange_code()` tests assert the token-exchange body
+  (`grant_type=authorization_code`, `code_verifier`, `client_id`) and the
+  `invalid_grant` vs retryable distinction; `async_refresh_tokens()` tests
+  assert rotation preservation when the response omits the refresh token.
+- Coordinator tests (future work) cover: successful update, `401` → refresh,
+  refresh failure → `ConfigEntryAuthFailed`, timeout/5xx → `UpdateFailed`, and
+  rotating-token persistence.
+- Entity tests (future work) cover state, attributes, device classes, unique
+  IDs and `unavailable` on `UpdateFailed`.
 
 ## 14. Corrections to the previous draft
 
+The previous draft's `organisaties.json` + password/form-login design was
+invalidated by SomToday's February 2025 changes (school list removed, password
+grant disabled). This revision replaces it with the browser authorization-code
++ PKCE flow.
+
 | Previous draft | Corrected design |
 |----------------|------------------|
-| No `client_id` mentioned | `client_id` is mandatory; `somtoday-leerling-native` (PKCE) |
-| Implied `client_secret` | Public client + PKCE `S256`, no secret |
+| School discovery via `organisaties.json` + `tenant_uuid` | No school list; authorize **omits `tenant_uuid`**, SomToday shows its own picker |
+| Server-side PKCE form scraping + password-grant fallback | Browser authorization-code + PKCE, paste the code |
+| SSO-only schools out of scope (`sso_not_supported`) | Browser flow handles SSO/MFA |
+| `SomTodayAuthClient.async_login(...)`, `_async_pkce_login`, `_async_password_grant`, `_extract_code(location)` | `SomTodayAuth.build_authorize_url()`, `extract_code(pasted)`, `async_exchange_code(code)`, `async_refresh_tokens()` |
+| Per-school `auth_method` stored in entry | Single browser flow; no `auth_method` |
+| `invalid_grant` treated as a generic auth error | `SomtodayInvalidAuth` → definitive rejection → reauth |
+| No `client_id` / implied `client_secret` | Public `client_id` constant (`somtoday-leerling-native`) + PKCE `S256`, no secret |
+| Password stored in entry | Password never used; only rotating refresh token persisted |
 | Endpoints `/leerlingen/{id}/rooster`, `/huiswerk`, `/cijfers` | `/rest/v1/afspraken`, `/rest/v1/studiewijzeritem*toekenningen`, `/rest/v1/resultaten/huidigVoorLeerling/{id}` |
-| Password stored in entry | Password never stored; only rotating refresh token |
-| No PKCE / browser-form flow | Full server-side PKCE authorization-code flow |
-| `sensor.py` only | `sensor` + `binary_sensor` + `calendar` |
+| `sensor.py` only | `sensor` + `binary_sensor` + `calendar` (future work) |
 | `hass.data[DOMAIN]` implied | `entry.runtime_data` |
-| No school discovery | `organisaties.json` + tenant UUID |
 | No pagination | `Range: items=0-99` for grades |

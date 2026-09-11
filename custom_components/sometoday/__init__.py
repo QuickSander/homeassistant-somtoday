@@ -18,20 +18,17 @@ from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import SomTodayApiClient
-from .auth import SomTodayAuthClient
-from .const import (
-    CONF_API_URL,
-    CONF_AUTH_METHOD,
-    CONF_TENANT_UUID,
-    DEFAULT_API_URL,
+from .auth import SomTodayAuth
+from .exceptions import (
+    SomTodayError,
+    SomtodayInvalidAuth,
 )
-from .exceptions import SomTodayAuthError, SomTodayConnectionError, SomTodayError
 from .models import SomTodayTokens
 
 _LOGGER = logging.getLogger(__name__)
 
 # Platforms are registered here once the entity modules exist. Keeping the list
-# empty lets the integration be installed and the authorisation be tested
+# empty lets the integration be installed and the authorization be tested
 # without any entities.
 PLATFORMS: list[Platform] = []
 
@@ -40,7 +37,7 @@ PLATFORMS: list[Platform] = []
 class SomTodayRuntimeData:
     """Runtime objects shared with the entity platforms."""
 
-    auth: SomTodayAuthClient
+    auth: SomTodayAuth
     api: SomTodayApiClient
 
 
@@ -52,35 +49,34 @@ async def async_setup_entry(
 ) -> bool:
     """Set up SomToday from a config entry."""
     session = async_get_clientsession(hass)
-    auth = SomTodayAuthClient(
+    restored = SomTodayTokens.from_entry(entry)
+    auth = SomTodayAuth(
         session,
-        entry.data[CONF_TENANT_UUID],
-        auth_method=entry.data.get(CONF_AUTH_METHOD),
+        tokens=restored,
+        api_url=restored.api_url,
+        tenant=restored.tenant,
     )
-    auth.tokens = SomTodayTokens.from_entry(entry)
 
-    previous_refresh_token = auth.tokens.refresh_token
     try:
+        # A definitive rejection (invalid_grant) must trigger reauth; a
+        # transient/connection failure should simply be retried by HA.
         await auth.async_ensure_valid()
-    except SomTodayAuthError as err:
+    except SomtodayInvalidAuth as err:
         raise ConfigEntryAuthFailed(str(err)) from err
-    except SomTodayConnectionError as err:
-        raise ConfigEntryNotReady(str(err)) from err
     except SomTodayError as err:
         raise ConfigEntryNotReady(str(err)) from err
 
-    # SomToday rotates refresh tokens. Persist the new token so the next
-    # restart keeps working. The coordinator will own this once it exists.
-    if auth.tokens is not None and auth.tokens.refresh_token != previous_refresh_token:
-        hass.config_entries.async_update_entry(
-            entry, data={**entry.data, **auth.as_entry_data()}
-        )
+    # SomToday rotates refresh tokens. Persist the rotated token (and account
+    # metadata) so the next restart keeps working. The coordinator will own this
+    # once it exists.
+    if auth.tokens is not None:
+        new_data = auth.as_entry_data()
+        if any(entry.data.get(key) != value for key, value in new_data.items()):
+            hass.config_entries.async_update_entry(
+                entry, data={**entry.data, **new_data}
+            )
 
-    api_url = (
-        auth.tokens.api_url
-        if auth.tokens is not None
-        else entry.data.get(CONF_API_URL) or DEFAULT_API_URL
-    )
+    api_url = auth.tokens.api_url if auth.tokens is not None else restored.api_url
     api = SomTodayApiClient(session, auth, api_url)
 
     entry.runtime_data = SomTodayRuntimeData(auth=auth, api=api)

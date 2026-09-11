@@ -2,45 +2,34 @@
   "config": {
     "step": {
       "user": {
-        "title": "Select your school",
-        "description": "Choose the SomToday school that belongs to this account.",
-        "data": {
-          "tenant_uuid": "School"
-        }
-      },
-      "credentials": {
         "title": "Sign in to SomToday",
-        "description": "Enter the SomToday credentials. The password is used once and is never stored.",
+        "description": "Open this URL in your browser and log in (SSO and MFA are supported):\n\n{auth_url}\n\nAfter logging in, the browser is redirected to a `somtoday://` address that Home Assistant cannot receive. Copy it from the address bar, or open Chrome DevTools → Network, find the callback request and copy its `Location:` header value. Paste the redirect URL (or just the code) below.",
         "data": {
-          "username": "Username",
-          "password": "Password"
-        }
-      },
-      "student": {
-        "title": "Select a student",
-        "description": "This account has multiple students. Choose the one to add.",
-        "data": {
-          "student_id": "Student"
+          "redirect_url": "Redirect URL or authorization code"
         }
       },
       "reauth_confirm": {
         "title": "Re-authenticate SomToday",
-        "description": "The SomToday session for {username} has expired. Enter the password again.",
+        "description": "Open this URL in your browser and log in again:\n\n{auth_url}\n\nThen paste the resulting redirect URL (or just the code) below. Tip: in Chrome DevTools → Network you can copy the `Location:` header of the callback request.",
         "data": {
-          "password": "Password"
+          "redirect_url": "Redirect URL or authorization code"
         }
       }
     },
     "error": {
+      "invalid_url": "Could not find an authorization code in the pasted text.",
+      "login_page": "It looks like the login was not completed yet. Finish logging in and paste the redirect URL.",
+      "state_mismatch": "This redirect does not belong to the current login attempt. Please start again from the link above.",
+      "invalid_auth": "SomToday rejected the authorization code. Please log in again.",
       "cannot_connect": "Could not connect to SomToday.",
-      "invalid_auth": "Invalid username or password.",
-      "sso_not_supported": "This school requires single sign-on, which is not supported yet.",
       "no_students": "No students were found for this account.",
+      "wrong_account": "A different SomToday account signed in.",
       "unknown": "An unexpected error occurred."
     },
     "abort": {
       "already_configured": "This account is already configured.",
-      "reauth_successful": "Re-authentication was successful."
+      "reauth_successful": "Re-authentication was successful.",
+      "wrong_account": "A different SomToday account signed in."
     }
   },
   "options": {

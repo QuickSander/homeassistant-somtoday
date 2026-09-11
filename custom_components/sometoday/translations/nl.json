@@ -2,45 +2,34 @@
   "config": {
     "step": {
       "user": {
-        "title": "Kies je school",
-        "description": "Kies de SomToday-school die bij dit account hoort.",
-        "data": {
-          "tenant_uuid": "School"
-        }
-      },
-      "credentials": {
         "title": "Inloggen bij SomToday",
-        "description": "Vul de SomToday-gegevens in. Het wachtwoord wordt eenmalig gebruikt en nooit opgeslagen.",
+        "description": "Open deze URL in je browser en log in (SSO en MFA worden ondersteund):\n\n{auth_url}\n\nNa het inloggen verwijst de browser naar een `somtoday://`-adres dat Home Assistant niet kan ontvangen. Kopieer het uit de adresbalk, of open Chrome DevTools → Network, zoek het callback-verzoek en kopieer de waarde van de `Location:`-header. Plak hieronder de redirect-URL (of alleen de code).",
         "data": {
-          "username": "Gebruikersnaam",
-          "password": "Wachtwoord"
-        }
-      },
-      "student": {
-        "title": "Kies een leerling",
-        "description": "Dit account heeft meerdere leerlingen. Kies degene die je wilt toevoegen.",
-        "data": {
-          "student_id": "Leerling"
+          "redirect_url": "Redirect-URL of autorisatiecode"
         }
       },
       "reauth_confirm": {
         "title": "Opnieuw inloggen bij SomToday",
-        "description": "De SomToday-sessie van {username} is verlopen. Vul het wachtwoord opnieuw in.",
+        "description": "Open deze URL in je browser en log opnieuw in:\n\n{auth_url}\n\nPlak hieronder de resulterende redirect-URL (of alleen de code). Tip: in Chrome DevTools → Network kun je de `Location:`-header van het callback-verzoek kopiëren.",
         "data": {
-          "password": "Wachtwoord"
+          "redirect_url": "Redirect-URL of autorisatiecode"
         }
       }
     },
     "error": {
+      "invalid_url": "Er is geen autorisatiecode gevonden in de geplakte tekst.",
+      "login_page": "Het lijkt erop dat het inloggen nog niet is afgerond. Rond het inloggen af en plak de redirect-URL.",
+      "state_mismatch": "Deze redirect hoort niet bij de huidige inlogpoging. Begin opnieuw via de link hierboven.",
+      "invalid_auth": "SomToday heeft de autorisatiecode afgewezen. Log opnieuw in.",
       "cannot_connect": "Kan geen verbinding maken met SomToday.",
-      "invalid_auth": "Onjuiste gebruikersnaam of wachtwoord.",
-      "sso_not_supported": "Deze school gebruikt single sign-on. Dat wordt nog niet ondersteund.",
       "no_students": "Er zijn geen leerlingen gevonden voor dit account.",
+      "wrong_account": "Er is ingelogd met een ander SomToday-account.",
       "unknown": "Er is een onverwachte fout opgetreden."
     },
     "abort": {
       "already_configured": "Dit account is al geconfigureerd.",
-      "reauth_successful": "Opnieuw inloggen is gelukt."
+      "reauth_successful": "Opnieuw inloggen is gelukt.",
+      "wrong_account": "Er is ingelogd met een ander SomToday-account."
     }
   },
   "options": {

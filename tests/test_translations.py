@@ -53,9 +53,23 @@ async def test_english_config_translations_load(hass: HomeAssistant) -> None:
 
     assert (
         translations[f"component.{DOMAIN}.config.step.user.title"]
-        == "Select your school"
-    )
-    assert (
-        translations[f"component.{DOMAIN}.config.step.credentials.title"]
         == "Sign in to SomToday"
     )
+    assert (
+        "{auth_url}"
+        in translations[f"component.{DOMAIN}.config.step.user.description"]
+    )
+    assert (
+        translations[f"component.{DOMAIN}.config.step.user.data.redirect_url"]
+        == "Redirect URL or authorization code"
+    )
+    for key in (
+        "invalid_url",
+        "login_page",
+        "state_mismatch",
+        "invalid_auth",
+        "cannot_connect",
+        "no_students",
+        "wrong_account",
+    ):
+        assert f"component.{DOMAIN}.config.error.{key}" in translations

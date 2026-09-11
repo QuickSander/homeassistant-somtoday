@@ -1,4 +1,4 @@
-"""Unit tests for the SomToday token and school models."""
+"""Unit tests for the SomToday token, account and student models."""
 
 from __future__ import annotations
 
@@ -7,12 +7,18 @@ from typing import Any
 
 import pytest
 
-from custom_components.sometoday.const import CONF_API_URL, CONF_REFRESH_TOKEN
+from custom_components.sometoday.const import (
+    CONF_ACCOUNT_ID,
+    CONF_API_URL,
+    CONF_REFRESH_TOKEN,
+    CONF_STUDENT_ID,
+    CONF_STUDENT_NAME,
+)
 from custom_components.sometoday.models import (
-    School,
+    Account,
     SomTodayTokens,
     Student,
-    parse_schools,
+    parse_account,
     parse_students,
 )
 
@@ -60,10 +66,37 @@ def test_from_token_response_defaults_api_url() -> None:
     assert tokens.api_url == "https://api.somtoday.nl"
 
 
+def test_from_token_response_uses_fallbacks() -> None:
+    """Fallbacks preserve the refresh token, API URL and tenant."""
+    payload = {
+        "access_token": "access",
+        "expires_in": 3600,
+    }
+
+    tokens = SomTodayTokens.from_token_response(
+        payload,
+        fallback_refresh_token="oldrefresh",
+        fallback_api_url="https://school.example/api",
+        fallback_tenant="school",
+    )
+
+    assert tokens.refresh_token == "oldrefresh"
+    assert tokens.api_url == "https://school.example/api"
+    assert tokens.tenant == "school"
+
+
 def test_from_token_response_missing_fields() -> None:
     """A payload without tokens is rejected."""
     with pytest.raises(ValueError):
         SomTodayTokens.from_token_response({"somtoday_api_url": "https://api"})
+
+
+def test_from_token_response_missing_refresh_token() -> None:
+    """A payload without a refresh token and no fallback is rejected."""
+    with pytest.raises(ValueError):
+        SomTodayTokens.from_token_response(
+            {"access_token": "access", "expires_in": 3600}
+        )
 
 
 def test_from_token_response_invalid_expires_in() -> None:
@@ -93,12 +126,15 @@ def test_expiry_helpers() -> None:
     assert fresh.expires_soon() is False
 
 
-def test_from_entry_forces_refresh() -> None:
-    """Restored tokens are marked expired so they are refreshed before use."""
+def test_from_entry_restores_metadata() -> None:
+    """Restored tokens are expired and carry the persisted account metadata."""
     entry = _FakeEntry(
         {
             CONF_REFRESH_TOKEN: "stored-refresh",
             CONF_API_URL: "https://api.somtoday.nl",
+            CONF_ACCOUNT_ID: "account-1",
+            CONF_STUDENT_ID: 1234,
+            CONF_STUDENT_NAME: "Eli Saado",
         }
     )
 
@@ -107,10 +143,20 @@ def test_from_entry_forces_refresh() -> None:
     assert tokens.refresh_token == "stored-refresh"
     assert tokens.access_token == ""
     assert tokens.expires_soon() is True
+    assert tokens.account_id == "account-1"
+    assert tokens.student_id == 1234
+    assert tokens.student_name == "Eli Saado"
+
+
+def test_from_entry_defaults_api_url() -> None:
+    """A missing api_url falls back to the default."""
+    entry = _FakeEntry({CONF_REFRESH_TOKEN: "stored-refresh"})
+
+    assert SomTodayTokens.from_entry(entry).api_url == "https://api.somtoday.nl"
 
 
 def test_as_entry_data() -> None:
-    """Only the refresh token and API URL are persisted."""
+    """Only the refresh token and API URL are persisted without metadata."""
     tokens = SomTodayTokens(
         access_token="a",
         refresh_token="r",
@@ -124,66 +170,77 @@ def test_as_entry_data() -> None:
     }
 
 
-def test_parse_schools_documented_shape() -> None:
-    """The documented organisaties.json shape is parsed."""
-    payload = [
-        {
-            "instellingen": [
-                {
-                    "uuid": "u1",
-                    "naam": "Etty Hillesum Lyceum",
-                    "plaats": "DEVENTER",
-                    "oidcurls": [{"url": "https://idp.example.com"}],
-                }
-            ]
-        }
-    ]
+def test_as_entry_data_includes_metadata() -> None:
+    """Account metadata is persisted alongside the token fields."""
+    tokens = SomTodayTokens(
+        access_token="a",
+        refresh_token="r",
+        api_url="https://api.somtoday.nl",
+        expires_at=datetime.now(UTC),
+        account_id="account-1",
+        student_id=1234,
+        student_name="Eli Saado",
+    )
 
-    schools = parse_schools(payload)
+    assert tokens.as_entry_data() == {
+        CONF_REFRESH_TOKEN: "r",
+        CONF_API_URL: "https://api.somtoday.nl",
+        CONF_ACCOUNT_ID: "account-1",
+        CONF_STUDENT_ID: 1234,
+        CONF_STUDENT_NAME: "Eli Saado",
+    }
 
-    assert len(schools) == 1
-    assert schools[0].uuid == "u1"
-    assert schools[0].place == "DEVENTER"
-    assert schools[0].has_oidc is True
-
-
-def test_parse_schools_flat_shapes() -> None:
-    """A bare mapping or list of school objects is tolerated."""
-    mapping = {"instellingen": [{"uuid": "u1", "naam": "A"}]}
-    flat = [{"uuid": "u2", "naam": "B"}]
-
-    assert parse_schools(mapping)[0].uuid == "u1"
-    assert parse_schools(flat)[0].uuid == "u2"
-
-
-def test_parse_schools_invalid() -> None:
-    """Unexpected payloads raise TypeError or ValueError."""
-    with pytest.raises(TypeError):
-        parse_schools("nope")
-    with pytest.raises(ValueError):
-        parse_schools([{"naam": "missing uuid"}])
-    with pytest.raises(TypeError):
-        parse_schools([{"instellingen": ["not-a-mapping"]}])
-    with pytest.raises(TypeError):
-        parse_schools([1, 2])
-
-
-def test_school_single_oidc_mapping_is_normalised() -> None:
-    """A single oidcurls object is normalised to a tuple."""
-    school = School.from_api({"uuid": "u", "naam": "A", "oidcurls": {"url": "x"}})
-
-    assert school.oidc_urls == ({"url": "x"},)
-    assert school.has_oidc is True
-
-
-def test_school_has_oidc_false_without_urls() -> None:
-    """A school without oidcurls does not advertise an IdP."""
-    school = School(uuid="u", name="A")
-
-    assert school.has_oidc is False
 
 # ---------------------------------------------------------------------------
-# Student / parse_students coverage (config-flow slice).
+# Account / parse_account
+# ---------------------------------------------------------------------------
+def test_parse_account_documented_shape() -> None:
+    """The account id comes from the first link and the username is kept."""
+    account = parse_account(
+        {
+            "links": [{"id": "account-1", "rel": "self"}],
+            "username": "eli@example.com",
+        }
+    )
+
+    assert account.id == "account-1"
+    assert account.username == "eli@example.com"
+
+
+def test_parse_account_uses_first_link() -> None:
+    """The first link carrying an id wins."""
+    account = parse_account(
+        {"links": [{"id": "first"}, {"id": "second", "rel": "self"}]}
+    )
+
+    assert account.id == "first"
+
+
+def test_parse_account_falls_back_to_top_level_id() -> None:
+    """Without links, the top-level id is used and coerced to a string."""
+    assert Account.from_api({"id": 42}).id == "42"
+    assert Account.from_api({"id": 42, "links": []}).id == "42"
+    assert Account.from_api({"id": 42, "links": [{"rel": "self"}]}).id == "42"
+
+
+def test_parse_account_without_username() -> None:
+    """A missing username is normalised to None."""
+    assert parse_account({"links": [{"id": "a"}]}).username is None
+    assert parse_account({"links": [{"id": "a"}], "username": ""}).username is None
+
+
+def test_parse_account_invalid() -> None:
+    """Unexpected payloads raise TypeError or ValueError."""
+    with pytest.raises(TypeError):
+        parse_account("nope")
+    with pytest.raises(TypeError):
+        parse_account([{"id": "a"}])
+    with pytest.raises(ValueError):
+        parse_account({"links": []})
+
+
+# ---------------------------------------------------------------------------
+# Student / parse_students
 # ---------------------------------------------------------------------------
 STUDENT_PAYLOAD: dict[str, Any] = {
     "links": [{"id": 1234, "rel": "self", "href": "https://api/leerlingen/1234"}],

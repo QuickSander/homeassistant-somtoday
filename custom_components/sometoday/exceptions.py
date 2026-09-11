@@ -20,8 +20,13 @@ class SomTodayAuthError(SomTodayError):
     """Raised when authentication or token refresh fails."""
 
 
-class SomTodaySsoNotSupported(SomTodayError):
-    """Raised when a school only supports an external identity provider."""
+class SomtodayInvalidAuth(SomTodayAuthError):
+    """Raised on a definitive OAuth2 rejection (``invalid_grant``/state).
+
+    Only an HTTP 400 with ``error=invalid_grant`` or a ``state`` mismatch is
+    definitive: reusing the same code or state can never succeed, so the user
+    must restart the browser login instead of retrying the exchange.
+    """
 
 
 class SomTodayApiError(SomTodayError):

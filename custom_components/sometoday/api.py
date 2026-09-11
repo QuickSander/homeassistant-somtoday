@@ -1,10 +1,10 @@
 """REST API client for SomToday.
 
 The client only depends on an injectable ``aiohttp.ClientSession`` and a
-:class:`~custom_components.sometoday.auth.SomTodayAuthClient`, so every HTTP
-call can be mocked in tests. This first slice implements the endpoints needed
-by the config flow; the remaining data endpoints are added alongside the
-coordinator and entities.
+:class:`~custom_components.sometoday.auth.SomTodayAuth`, so every HTTP call can
+be mocked in tests. This slice implements the endpoints needed by the config
+flow; the remaining data endpoints are added alongside the coordinator and
+entities.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any
 
 import aiohttp
 
-from .auth import SomTodayAuthClient
+from .auth import SomTodayAuth
 from .const import REQUEST_TIMEOUT
 from .exceptions import (
     SomTodayApiError,
@@ -23,11 +23,16 @@ from .exceptions import (
     SomTodayConnectionError,
     SomTodayRateLimitError,
 )
-from .models import Student, parse_students
+from .models import Account, Student, parse_account, parse_students
 
 _LOGGER = logging.getLogger(__name__)
 
+ACCOUNT_PATH = "/rest/v1/account/me"
 STUDENTS_PATH = "/rest/v1/leerlingen"
+
+# Bound the diagnostic summary so a large HTML error page cannot flood the log.
+_MAX_DIAGNOSTIC_BODY = 500
+_MAX_DIAGNOSTIC_LOCATION = 200
 
 
 def _release(response: Any) -> None:
@@ -43,10 +48,10 @@ class SomTodayApiClient:
     def __init__(
         self,
         session: aiohttp.ClientSession,
-        auth: SomTodayAuthClient,
+        auth: SomTodayAuth,
         base_url: str,
     ) -> None:
-        """Initialise the client with an injectable session and auth client."""
+        """Initialise the client with an injectable session and auth holder."""
         self._session = session
         self._auth = auth
         self._base_url = base_url.rstrip("/")
@@ -56,6 +61,16 @@ class SomTodayApiClient:
     def base_url(self) -> str:
         """Return the API base URL the client talks to."""
         return self._base_url
+
+    async def async_get_account(self) -> Account:
+        """Return the authenticated account from ``/rest/v1/account/me``."""
+        payload = await self._request("GET", ACCOUNT_PATH)
+        try:
+            return parse_account(payload)
+        except (TypeError, ValueError) as err:
+            raise SomTodayApiError(
+                "The account has an unexpected format"
+            ) from err
 
     async def async_get_students(self) -> list[Student]:
         """Return the students linked to the authenticated account."""
@@ -144,14 +159,17 @@ class SomTodayApiClient:
         try:
             status = response.status
             if status in (401, 403):
+                await self._log_error_summary(response, method, path)
                 raise SomTodayAuthError(
                     f"SomToday rejected the {method} {path} request (HTTP {status})"
                 )
             if status == 429:
+                await self._log_error_summary(response, method, path)
                 raise SomTodayRateLimitError(
                     f"SomToday rate limited the {method} {path} request (HTTP 429)"
                 )
             if status >= 400:
+                await self._log_error_summary(response, method, path)
                 raise SomTodayApiError(
                     f"The {method} {path} request returned HTTP {status}"
                 )
@@ -168,3 +186,36 @@ class SomTodayApiClient:
                 ) from err
         finally:
             _release(response)
+
+    async def _log_error_summary(
+        self,
+        response: aiohttp.ClientResponse,
+        method: str,
+        path: str,
+    ) -> None:
+        """Log a bounded status/body/redirect summary for diagnostics.
+
+        Only response metadata is logged; request headers (which carry the
+        bearer token) are never touched.
+        """
+        location = ""
+        headers = getattr(response, "headers", None)
+        if isinstance(headers, Mapping):
+            location = str(headers.get("Location", ""))
+
+        body = ""
+        text = getattr(response, "text", None)
+        if text is not None:
+            try:
+                body = await text()
+            except (aiohttp.ClientError, TimeoutError, ValueError):
+                body = ""
+
+        _LOGGER.debug(
+            "SomToday %s %s returned HTTP %s (location=%s, body=%s)",
+            method,
+            path,
+            response.status,
+            location[:_MAX_DIAGNOSTIC_LOCATION],
+            body[:_MAX_DIAGNOSTIC_BODY],
+        )
