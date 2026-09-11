@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Sign in to SomToday",
-        "description": "**Step 1.** Open this link and sign in — SSO and MFA are supported:\n\n{auth_url}\n\n**Step 2.** After signing in, the browser goes to a `somtoday://…` address that Home Assistant cannot open. Copy it from the address bar. In Chrome the redirect may be blocked, so open DevTools (F12) → Network, click the request to `somtoday.nl`, and copy the `Location:` header.\n\n**Step 3.** Paste it below — the full URL, the `Location:` value, or just the code.",
+        "description": "**Step 1.** Open this link and sign in — SSO and MFA are supported:\n\n{auth_url}\n\n**Step 2.** After signing in, the browser is sent to a `somtoday://…` address. On a device with the SomToday app installed (e.g. macOS or iOS) that link may open the app instead of showing the address in the address bar.\n\n- If you can see the address, copy it.\n- If the app opens instead, use DevTools (F12) → Network, click the request to `somtoday.nl`, and copy the `Location:` response header — it contains the code.\n\n**Step 3.** Paste it below — the full URL, the `Location:` value, or just the code.",
         "data": {
           "redirect_url": "Redirect URL or code"
         },
@@ -13,7 +13,7 @@
       },
       "reauth_confirm": {
         "title": "Re-authenticate SomToday",
-        "description": "**Step 1.** Open this link and sign in again:\n\n{auth_url}\n\n**Step 2.** Paste the resulting `somtoday://…` address (or just the code) below. In Chrome, use DevTools (F12) → Network and copy the `Location:` header of the request to `somtoday.nl`.",
+        "description": "**Step 1.** Open this link and sign in again:\n\n{auth_url}\n\n**Step 2.** Paste the resulting `somtoday://…` address (or just the code) below. If the SomToday app opens instead, use DevTools (F12) → Network and copy the `Location:` header of the request to `somtoday.nl`.",
         "data": {
           "redirect_url": "Redirect URL or code"
         },

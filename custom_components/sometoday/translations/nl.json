@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Inloggen bij SomToday",
-        "description": "**Stap 1.** Open deze link en log in — SSO en MFA worden ondersteund:\n\n{auth_url}\n\n**Stap 2.** Na het inloggen gaat de browser naar een `somtoday://…`-adres dat Home Assistant niet kan openen. Kopieer het uit de adresbalk. In Chrome wordt deze redirect soms geblokkeerd; open dan DevTools (F12) → Network, klik op het verzoek naar `somtoday.nl` en kopieer de `Location:`-header.\n\n**Stap 3.** Plak het hieronder — de volledige URL, de `Location:`-waarde of alleen de code.",
+        "description": "**Stap 1.** Open deze link en log in — SSO en MFA worden ondersteund:\n\n{auth_url}\n\n**Stap 2.** Na het inloggen stuurt de browser je naar een `somtoday://…`-adres. Op een apparaat met de SomToday-app (bijv. macOS of iOS) opent die link mogelijk de app in plaats van dat het adres in de adresbalk verschijnt.\n\n- Zie je het adres wel? Kopieer het dan.\n- Opent de app in plaats daarvan? Gebruik DevTools (F12) → Network, klik op het verzoek naar `somtoday.nl` en kopieer de `Location:`-responseheader — daarin staat de code.\n\n**Stap 3.** Plak het hieronder — de volledige URL, de `Location:`-waarde of alleen de code.",
         "data": {
           "redirect_url": "Redirect-URL of code"
         },
@@ -13,7 +13,7 @@
       },
       "reauth_confirm": {
         "title": "Opnieuw inloggen bij SomToday",
-        "description": "**Stap 1.** Open deze link en log opnieuw in:\n\n{auth_url}\n\n**Stap 2.** Plak het resulterende `somtoday://…`-adres (of alleen de code) hieronder. Gebruik in Chrome DevTools (F12) → Network en kopieer de `Location:`-header van het verzoek naar `somtoday.nl`.",
+        "description": "**Stap 1.** Open deze link en log opnieuw in:\n\n{auth_url}\n\n**Stap 2.** Plak het resulterende `somtoday://…`-adres (of alleen de code) hieronder. Opent de SomToday-app in plaats daarvan? Gebruik dan DevTools (F12) → Network en kopieer de `Location:`-header van het verzoek naar `somtoday.nl`.",
         "data": {
           "redirect_url": "Redirect-URL of code"
         },

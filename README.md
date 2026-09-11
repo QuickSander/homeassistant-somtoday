@@ -50,6 +50,13 @@ flow as the official app:
    - open **Chrome DevTools → Network**, find the request to the callback, and
      copy the value of its **`Location:`** response header, or
    - paste just the authorization `code`.
+
+   > **If the SomToday app opens instead** (common on macOS/iOS where the app is
+   > installed), the OS handles the `somtoday://` link and the address never
+   > appears in the browser. Use the **DevTools `Location:` header** method: open
+   > DevTools (F12) → **Network** *before* finishing the login, click the request
+   > to `somtoday.nl`, and copy the `Location:` response header. You can also use
+   > a desktop browser/profile without the SomToday app installed.
 5. Home Assistant exchanges the code for tokens, reads
    `/rest/v1/account/me` (falling back to `/rest/v1/leerlingen`) and creates the
    config entry. Only the rotating refresh token and account metadata are stored.
