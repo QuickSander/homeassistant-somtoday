@@ -3,16 +3,22 @@
     "step": {
       "user": {
         "title": "Sign in to SomToday",
-        "description": "Open this URL in your browser and log in (SSO and MFA are supported):\n\n{auth_url}\n\nAfter logging in, the browser is redirected to a `somtoday://` address that Home Assistant cannot receive. Copy it from the address bar, or open Chrome DevTools → Network, find the callback request and copy its `Location:` header value. Paste the redirect URL (or just the code) below.",
+        "description": "**Step 1.** Open this link and sign in — SSO and MFA are supported:\n\n{auth_url}\n\n**Step 2.** After signing in, the browser goes to a `somtoday://…` address that Home Assistant cannot open. Copy it from the address bar. In Chrome the redirect may be blocked, so open DevTools (F12) → Network, click the request to `somtoday.nl`, and copy the `Location:` header.\n\n**Step 3.** Paste it below — the full URL, the `Location:` value, or just the code.",
         "data": {
-          "redirect_url": "Redirect URL or authorization code"
+          "redirect_url": "Redirect URL or code"
+        },
+        "data_description": {
+          "redirect_url": "Paste the full somtoday://… address, the Location header value, or just the authorization code."
         }
       },
       "reauth_confirm": {
         "title": "Re-authenticate SomToday",
-        "description": "Open this URL in your browser and log in again:\n\n{auth_url}\n\nThen paste the resulting redirect URL (or just the code) below. Tip: in Chrome DevTools → Network you can copy the `Location:` header of the callback request.",
+        "description": "**Step 1.** Open this link and sign in again:\n\n{auth_url}\n\n**Step 2.** Paste the resulting `somtoday://…` address (or just the code) below. In Chrome, use DevTools (F12) → Network and copy the `Location:` header of the request to `somtoday.nl`.",
         "data": {
-          "redirect_url": "Redirect URL or authorization code"
+          "redirect_url": "Redirect URL or code"
+        },
+        "data_description": {
+          "redirect_url": "Paste the full somtoday://… address, the Location header value, or just the authorization code."
         }
       }
     },

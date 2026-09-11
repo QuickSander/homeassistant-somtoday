@@ -61,7 +61,7 @@ async def test_english_config_translations_load(hass: HomeAssistant) -> None:
     )
     assert (
         translations[f"component.{DOMAIN}.config.step.user.data.redirect_url"]
-        == "Redirect URL or authorization code"
+        == "Redirect URL or code"
     )
     for key in (
         "invalid_url",
