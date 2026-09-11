@@ -1,0 +1,62 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Select your school",
+        "description": "Choose the SomToday school that belongs to this account.",
+        "data": {
+          "tenant_uuid": "School"
+        }
+      },
+      "credentials": {
+        "title": "Sign in to SomToday",
+        "description": "Enter the SomToday credentials. The password is used once and is never stored.",
+        "data": {
+          "username": "Username",
+          "password": "Password"
+        }
+      },
+      "student": {
+        "title": "Select a student",
+        "description": "This account has multiple students. Choose the one to add.",
+        "data": {
+          "student_id": "Student"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate SomToday",
+        "description": "The SomToday session for {username} has expired. Enter the password again.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect to SomToday.",
+      "invalid_auth": "Invalid username or password.",
+      "sso_not_supported": "This school requires single sign-on, which is not supported yet.",
+      "no_students": "No students were found for this account.",
+      "unknown": "An unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This account is already configured.",
+      "reauth_successful": "Re-authentication was successful."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "SomToday options",
+        "description": "Configure how often SomToday is polled and which data is fetched.",
+        "data": {
+          "scan_interval": "Poll interval (minutes)",
+          "schedule_days_ahead": "Days of schedule to fetch",
+          "homework_days_ahead": "Days of homework to fetch",
+          "enable_grades": "Enable grades",
+          "enable_homework": "Enable homework",
+          "enable_absence": "Enable absence"
+        }
+      }
+    }
+  }
+}

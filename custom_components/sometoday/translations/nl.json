@@ -1,0 +1,62 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Kies je school",
+        "description": "Kies de SomToday-school die bij dit account hoort.",
+        "data": {
+          "tenant_uuid": "School"
+        }
+      },
+      "credentials": {
+        "title": "Inloggen bij SomToday",
+        "description": "Vul de SomToday-gegevens in. Het wachtwoord wordt eenmalig gebruikt en nooit opgeslagen.",
+        "data": {
+          "username": "Gebruikersnaam",
+          "password": "Wachtwoord"
+        }
+      },
+      "student": {
+        "title": "Kies een leerling",
+        "description": "Dit account heeft meerdere leerlingen. Kies degene die je wilt toevoegen.",
+        "data": {
+          "student_id": "Leerling"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Opnieuw inloggen bij SomToday",
+        "description": "De SomToday-sessie van {username} is verlopen. Vul het wachtwoord opnieuw in.",
+        "data": {
+          "password": "Wachtwoord"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Kan geen verbinding maken met SomToday.",
+      "invalid_auth": "Onjuiste gebruikersnaam of wachtwoord.",
+      "sso_not_supported": "Deze school gebruikt single sign-on. Dat wordt nog niet ondersteund.",
+      "no_students": "Er zijn geen leerlingen gevonden voor dit account.",
+      "unknown": "Er is een onverwachte fout opgetreden."
+    },
+    "abort": {
+      "already_configured": "Dit account is al geconfigureerd.",
+      "reauth_successful": "Opnieuw inloggen is gelukt."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "SomToday-opties",
+        "description": "Stel in hoe vaak SomToday wordt opgehaald en welke gegevens worden opgehaald.",
+        "data": {
+          "scan_interval": "Poll-interval (minuten)",
+          "schedule_days_ahead": "Aantal dagen rooster",
+          "homework_days_ahead": "Aantal dagen huiswerk",
+          "enable_grades": "Cijfers inschakelen",
+          "enable_homework": "Huiswerk inschakelen",
+          "enable_absence": "Absentie inschakelen"
+        }
+      }
+    }
+  }
+}

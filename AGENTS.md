@@ -1,310 +1,378 @@
 # AGENTS.md — SomToday Home Assistant Plugin
 
-> Dit document definieert de rollen, verantwoordelijkheden en samenwerkingsafspraken
-> voor de ontwikkeling van de SomToday custom component voor Home Assistant.
-> Aider leest dit document als context bij elke sessie.
+> This document defines the roles, responsibilities and collaboration
+> agreements for the development of the SomToday custom component for Home
+> Assistant.
+> opencode reads this file automatically as project instructions at the start
+> of every session.
 
-## Projectcontext
+## Project context
 
-**Doel**: Een Home Assistant custom component dat SomToday-data (rooster, huiswerk,
-cijfers) uitleest en beschikbaar maakt als sensoren.
+**Goal**: A Home Assistant custom component that reads SomToday data
+(schedule, homework, grades) and exposes it as sensors.
 
-**Technologie**:
+**Technology**:
 - Python 3.12+
-- Home Assistant integratieframework
-- DataUpdateCoordinator patroon voor polling
-- Config flow voor gebruikersconfiguratie
+- Home Assistant integration framework
+- DataUpdateCoordinator pattern for polling
+- Config flow for user configuration
 
-**Repository-structuur**:
+**Repository structure**:
 
-"""text
+```text
 custom_components/sometoday/
-├── __init__.py
-├── manifest.json
-├── config_flow.py
-├── coordinator.py
-├── sensor.py
-├── const.py
-├── strings.json
+├── __init__.py          # Setup, runtime_data, entry unload
+├── manifest.json        # Metadata + version
+├── config_flow.py       # Config + options + reauth flow
+├── coordinator.py       # SomTodayDataUpdateCoordinator
+├── api.py               # SomTodayApiClient (injectable session)
+├── auth.py              # SomTodayAuthClient (PKCE + password fallback)
+├── exceptions.py        # Shared error hierarchy
+├── models.py            # Dataclasses + parsers
+├── entity.py            # Shared SomTodayEntity base
+├── sensor.py            # Sensor entities
+├── binary_sensor.py     # Binary sensor entities
+├── calendar.py          # Calendar entity
+├── const.py             # Constants (CONF_*, DEFAULT_*, client IDs)
+├── strings.json         # Translations (source of truth, EN)
 └── translations/
-    └── nl.json
-"""
+    ├── en.json          # English translations (loaded by HA)
+    └── nl.json          # Dutch translations
+```
 
 ---
 
-## Kernregels voor alle agenten
+## Core rules for all agents
 
-1. **Documentatie is onderdeel van de taak** — elke wijziging wordt gedocumenteerd
-   in dezelfde stap in het Engels.
-2. **Geen code zonder tests** — nieuwe functionaliteit vereist minimaal een
+1. **Documentation is part of the task** — every change is documented in the
+   same step, in English.
+2. **No code without tests** — new functionality requires at least one
    config flow test.
-3. **Lees eerst docs/architecture.md** voordat je begint met implementeren.
-4. **Volg Home Assistant coding standards** — gebruik de scaffold als basis.
-4. **Code in het Engels** -- Alle methode namen en variabelen namen, maar ook commentaar is in het Engels geschreven.
-5. **Elke wijziging wordt gecommit** — Aider doet dit automatisch, maar
-   controleer de commit messages.
+3. **Read docs/architecture.md first** before you start implementing.
+4. **Follow Home Assistant coding standards** — use the scaffold as a base.
+5. **Code in English** — all method names, variable names, and comments are
+   written in English.
+6. **Every change is committed** — only when the user explicitly asks for a
+   commit. Unlike Aider, opencode never commits on its own. Check the commit
+   message against the repository style.
+
+---
+
+## How opencode maps the roles
+
+The Aider modes (`/architect`, `/code`, `/ask`) do not exist in opencode.
+Instead, each role is a dedicated **subagent** plus a matching **command**:
+
+| Role | opencode subagent | Command |
+|------|-------------------|---------|
+| Architecture | `.opencode/agent/architect.md` | `/architect` |
+| Implementation | `.opencode/agent/engineer.md` | `/code` |
+| Testing | `.opencode/agent/tester.md` | `/test` |
+| Review | `.opencode/agent/reviewer.md` | `/review` |
+
+Each subagent has its own model configured in its frontmatter (see
+[Multi-model strategy](#multi-model-strategy)) and restricted permissions that
+enforce the role's "may NEVER" rules. The commands are thin wrappers that run
+the matching agent with the right prompt.
+
+> Note: opencode loads its config once at startup and does not hot-reload. After
+> changing `opencode.json`, an agent file, or a command, quit and restart
+> opencode.
 
 ---
 
 ## Agent 1: architect-agent
 
-**Model**: deepseek/deepseek-reasoner (via /architect mode)
+**opencode agent**: `architect` — **Model**: `deepseek/deepseek-v4-pro`
 
-**Doel**: Ontwerpt de systeemarchitectuur en bepaalt de technische aanpak.
+**Goal**: Designs the system architecture and determines the technical
+approach.
 
-**Verantwoordelijkheden**:
-- Bepalen van de integratiestructuur (config flow, coordinator, entities)
-- Kiezen van de juiste Home Assistant patronen
-- Opstellen van technische specificaties in docs/architecture.md met mogelijk gebruik van PlantUML syntax.
-- Identificeren van benodigde API-endpoints van SomToday gebaseerd op: https://github.com/elisaado/somtoday-api-docs
-- Bepalen van sensor-types (sensor, binary_sensor, calendar)
-- Bepalen van de OAuth2 login flow.
--  Een object georienteerd ontwerp prefereren maar altijd de Home assistant plug-in conventies of meest gebruikte opzet volgen.
+**Responsibilities**:
+- Determine the integration structure (config flow, coordinator, entities)
+- Choose the right Home Assistant patterns
+- Write technical specifications in docs/architecture.md, optionally using
+  PlantUML syntax
+- Identify the required SomToday API endpoints based on:
+  https://github.com/elisaado/somtoday-api-docs
+- Determine the sensor types (sensor, binary_sensor, calendar)
+- Determine the OAuth2 login flow
+- Prefer an object-oriented design, but always follow the Home Assistant
+  plug-in conventions or the most common setup
 
 **Input**: Requirements, Home Assistant developer docs
-**Output**: docs/architecture.md met technisch ontwerp
+**Output**: docs/architecture.md with the technical design
 
-**Mag NOOIT**:
-- Code schrijven of bestanden aanmaken buiten docs/
-- Tests uitvoeren
+**May NEVER**:
+- Write code or create files outside `docs/`
+- Run tests
 
-**Voorbeeldcommando**:
+**Example command**:
 
-"""text
-/architect Ontwerp de architectuur voor een SomToday integratie.
-Gebruik DataUpdateCoordinator voor polling elke 15 minuten.
-Beschrijf: config flow, coordinator, sensor entities, error handling.
-Schrijf het resultaat naar docs/architecture.md
-"""
+```text
+/architect Design the architecture for a SomToday integration.
+Use a DataUpdateCoordinator to poll every 15 minutes.
+Describe: config flow, coordinator, sensor entities, error handling.
+Write the result to docs/architecture.md
+```
 
 ---
 
 ## Agent 2: engineer-agent
 
-**Model**: deepseek/deepseek-chat (via /code mode)
+**opencode agent**: `engineer` — **Model**: `deepseek/deepseek-v4-flash`
 
-**Doel**: Implementeert de code volgens het architectuurontwerp.
+**Goal**: Implements the code according to the architecture design.
 
-**Verantwoordelijkheden**:
-- Schrijven van Python code voor de integratie
-- Volgen van Home Assistant coding standards
-- Aanmaken van manifest.json met version key
-- Implementeren van config flow en coordinator
-- Aanmaken van sensor entities met juiste device classes
+**Responsibilities**:
+- Write Python code for the integration
+- Follow Home Assistant coding standards
+- Create manifest.json with a version key
+- Implement the config flow and coordinator
+- Create sensor entities with the correct device classes
+- Provide an API client with an injectable session so it can be mocked
 
-**Input**: docs/architecture.md van architect-agent
-**Output**: Werkende code in custom_components/sometoday/
+**Input**: docs/architecture.md from the architect-agent
+**Output**: Working code in custom_components/sometoday/
 
-**Mag NOOIT**:
-- Architectuur wijzigen zonder overleg
-- Code committen zonder dat tests slagen
+**May NEVER**:
+- Change the architecture without consultation
+- Commit code when the tests fail
 
-**Voorbeeldcommando**:
+**Example command**:
 
-"""text
-/code Implementeer de config flow volgens docs/architecture.md.
-Gebruik de scaffold-structuur van Home Assistant.
-Voeg ook de benodigde strings.json toe voor vertalingen.
-"""
+```text
+/code Implement the config flow according to docs/architecture.md.
+Use the Home Assistant scaffold structure.
+Also add the required strings.json for translations.
+```
 
 ---
 
 ## Agent 3: tester-agent
 
-**Model**: deepseek/deepseek-chat (via /code mode)
+**opencode agent**: `tester` — **Model**: `deepseek/deepseek-v4-flash`
 
-**Doel**: Valideert de implementatie tegen de requirements.
+**Goal**: Validates the implementation against the requirements.
 
-**Verantwoordelijkheden**:
-- Schrijven van unit tests voor config flow
-- Schrijven van unit tests voor coordinator (inclusief polling en error handling)
-- Schrijven van unit tests voor sensor entities (state, attributes, device classes)
-- Schrijven van unit tests voor de OAuth2 login flow (token refresh, expiry)
-- Uitvoeren van integratietests via de `hass` fixture
-- Meten en rapporteren van test coverage
-- Rapporteren van bevindingen in docs/test-report.md
-- Controleren van error handling scenarios
+**Responsibilities**:
+- Write unit tests for the config flow
+- Write unit tests for the coordinator (including polling and error handling)
+- Write unit tests for the sensor entities (state, attributes, device classes)
+- Write unit tests for the OAuth2 login flow (token refresh, expiry)
+- Run integration tests via the `hass` fixture
+- Measure and report test coverage
+- Report findings in docs/test-report.md
+- Verify error handling scenarios
 
-**Input**: Code van engineer-agent, requirements
-**Output**: tests/ map met tests, docs/test-report.md
+**Input**: Code from the engineer-agent, requirements
+**Output**: tests/ directory with tests, docs/test-report.md
 
-**Test-tooling**:
-- `pytest` als test runner
-- `pytest-asyncio` voor async tests
-- `pytest-homeassistant-custom-component` voor de `hass` fixture en HA test helpers
-- `pytest-cov` voor coverage rapportage
-- Deze dependencies staan in `requirements_test.txt` (aan te maken door engineer-agent)
+**Test tooling**:
+- `pytest` as the test runner
+- `pytest-asyncio` for async tests
+- `pytest-homeassistant-custom-component` for the `hass` fixture and HA test
+  helpers
+- `pytest-cov` for coverage reporting
+- These dependencies live in `requirements_test.txt` (to be created by the
+  engineer-agent)
 
-**Teststrategie per component**:
+**Test strategy per component**:
 
-| Component | Testtype | Belangrijkste scenarios |
-|-----------|----------|-------------------------|
-| config_flow | unit | succesvolle setup, ongeldige credentials, netwerk timeout, duplicate entry |
-| coordinator | unit | succesvolle update, API error, timeout, retry gedrag |
-| sensor | unit | correcte state, attributes, device class, unavailable bij API error |
+| Component | Test type | Main scenarios |
+|-----------|-----------|----------------|
+| config_flow | unit | successful setup, invalid credentials, network timeout, duplicate entry |
+| coordinator | unit | successful update, API error, timeout, retry behavior |
+| sensor | unit | correct state, attributes, device class, unavailable on API error |
 | OAuth2 flow | unit | token refresh, token expiry, refresh failure |
 
-**Mock-afspraken**:
-- De SomToday API wordt **altijd** gemockt; tests mogen nooit de echte API aanroepen
-- Gebruik `aioresponses` of `unittest.mock` voor HTTP-mocking
-- Mock responses worden als fixtures in `tests/conftest.py` geplaatst
-- De engineer-agent levert de API-client met een injecteerbare sessie zodat deze mockbaar is
+**Mocking agreements**:
+- The SomToday API is **always** mocked; tests may never call the real API
+- Use `aioresponses` or `unittest.mock` for HTTP mocking
+- Mock responses are placed as fixtures in `tests/conftest.py`
+- The engineer-agent delivers the API client with an injectable session so it
+  can be mocked
 
-**Rapport-template** (`docs/test-report.md`):
-- **Samenvatting**: aantal tests, geslaagd/gezakt, coverage percentage
-- **Testcases**: per component een tabel met testnaam, doel, resultaat
-- **Coverage**: per bestand het coverage percentage
-- **Bevindingen**: gevonden bugs of ontbrekende scenarios
-- **Blockers**: zaken die niet getest konden worden, met reden
+**Report template** (`docs/test-report.md`):
+- **Summary**: number of tests, passed/failed, coverage percentage
+- **Test cases**: per component a table with test name, goal, result
+- **Coverage**: coverage percentage per file
+- **Findings**: discovered bugs or missing scenarios
+- **Blockers**: things that could not be tested, with the reason
 
-**Mag NOOIT**:
-- Productiecode aanpassen (alleen rapporteren)
-- Tests verwijderen zonder documentatie
-- De echte SomToday API aanroepen in tests
+**May NEVER**:
+- Modify production code (only report)
+- Remove tests without documentation
+- Call the real SomToday API in tests
 
-**Escalatie**: escaleer naar de mens wanneer:
-- De API-documentatie onvoldoende is om een scenario te testen
-- Een test alleen kan slagen door productiecode aan te passen
-- Coverage onder 80% blijft na redelijke inspanning
+**Escalation**: escalate to the human when:
+- The API documentation is insufficient to test a scenario
+- A test can only pass by modifying production code
+- Coverage stays below 80% after reasonable effort
 
-**Voorbeeldcommando**:
+**Example command**:
 
-"""text
-/code Schrijf pytest tests voor de config flow.
-Test: succesvolle setup, ongeldige credentials, netwerk timeout.
-Voer de tests uit met: pytest tests/ -v
-"""
+```text
+/test Write pytest tests for the config flow.
+Test: successful setup, invalid credentials, network timeout.
+Run the tests with: pytest tests/ -v
+```
 
 ---
 
 ## Agent 4: reviewer-agent
 
-**Model**: deepseek/deepseek-reasoner (via /ask mode)
+**opencode agent**: `reviewer` — **Model**: `deepseek/deepseek-v4-flash`
 
-**Doel**: Onafhankelijke kwaliteitscontrole van code en documentatie.
+**Goal**: Independent quality control of code and documentation.
 
-**Verantwoordelijkheden**:
-- Code review op veiligheid en best practices
-- Controleren of documentatie compleet is
-- Valideren van Home Assistant specifieke patronen
-- Escaleren naar mens bij twijfel
+**Responsibilities**:
+- Code review for security and best practices
+- Verify that documentation is complete
+- Validate Home Assistant specific patterns
+- Escalate to the human when in doubt
 
-**Input**: Alle code en documentatie
-**Output**: Review-rapport in docs/review.md
+**Input**: All code and documentation
+**Output**: Review report in docs/review.md
 
-**Mag NOOIT**:
-- Zelf code aanpassen (alleen rapporteren)
-- Goedkeuring geven zonder volledige controle
+**May NEVER**:
+- Change code itself (only report)
+- Approve without a full review
 
-**Voorbeeldcommando**:
+**Example command**:
 
-"""text
-/ask Review de code in custom_components/sometoday/.
-Controleer: security, error handling, Home Assistant best practices.
-Rapporteer bevindingen in docs/review.md
-"""
+```text
+/review Review the code in custom_components/sometoday/.
+Check: security, error handling, Home Assistant best practices.
+Report the findings in docs/review.md
+```
 
 ---
 
-## Samenwerkingspatroon: Sequentieel
+## Collaboration pattern: Sequential
 
-Dit patroon werkt het beste voor een Home Assistant plugin omdat elke fase
-voortbouwt op de vorige:
+This pattern works best for a Home Assistant plugin because every phase builds
+on the previous one:
 
-"""text
-Fase 1: architect-agent
+```text
+Phase 1: architect-agent
    ↓ (docs/architecture.md)
-Fase 2: engineer-agent
+Phase 2: engineer-agent
    ↓ (custom_components/sometoday/)
-Fase 3: tester-agent
+Phase 3: tester-agent
    ↓ (tests/ + docs/test-report.md)
-Fase 4: reviewer-agent
+Phase 4: reviewer-agent
    ↓ (docs/review.md)
-Fase 5: engineer-agent (verwerkt feedback)
+Phase 5: engineer-agent (processes feedback)
    ↓
-Fase 6: docs-agent (update documentatie)
-"""
+Phase 6: docs update
+```
 
-### Overdrachtsmomenten
+### Handover points
 
-| Van | Naar | Artefact | Kwaliteitspoort |
-|-----|------|----------|-----------------|
-| architect | engineer | docs/architecture.md | Alle componenten beschreven |
-| engineer | tester | Werkende code | Code draait zonder errors |
-| tester | reviewer | tests/ + rapport | 80% coverage |
-| reviewer | engineer | docs/review.md | Geen blocking issues |
-
----
-
-## Multi-Model Strategie
-
-Gebruik verschillende modellen voor verschillende taken om kosten te
-besparen:
-
-| Taak | Model | Commando |
-|------|-------|----------|
-| Architectuur | DeepSeek Reasoner | /architect |
-| Implementatie | DeepSeek Chat | /code |
-| Tests | DeepSeek Chat | /code |
-| Review | DeepSeek Reasoner | /ask |
-
+| From | To | Artifact | Quality gate |
+|------|----|----------|--------------|
+| architect | engineer | docs/architecture.md | All components described |
+| engineer | tester | Working code | Code runs without errors |
+| tester | reviewer | tests/ + report | 80% coverage |
+| reviewer | engineer | docs/review.md | No blocking issues |
 
 ---
 
-## Kwaliteitspoorten
+## Multi-model strategy
 
-Voordat een volgende fase start, moet aan deze criteria voldaan zijn:
+The model is set per agent in `.opencode/agent/<name>.md` and can be overridden
+per run with `/models` or the `-m/--model` flag. The architect runs on
+`deepseek/deepseek-v4-pro`, the most capable model available from the provider,
+for the design-heavy work; the other three subagents use
+`deepseek/deepseek-v4-flash`, which is faster and sufficient for implementation,
+tests and review.
 
-**Na architectuur**:
-- [ ] Alle componenten beschreven in docs/architecture.md
-- [ ] API-endpoints geïdentificeerd
-- [ ] Error handling scenario's benoemd
-
-**Na implementatie**:
-- [ ] Code draait zonder import errors
-- [ ] manifest.json heeft version key
-- [ ] Config flow werkt in Home Assistant UI
-
-**Na tests**:
-- [ ] Minimale 80% test coverage
-- [ ] Alle tests slagen
-- [ ] Error scenarios getest
-
-**Na review**:
-- [ ] Geen security issues
-- [ ] Documentatie compleet
-- [ ] Home Assistant best practices gevolgd
+| Task | Model | Command |
+|------|-------|---------|
+| Architecture | `deepseek/deepseek-v4-pro` | `/architect` |
+| Implementation | `deepseek/deepseek-v4-flash` | `/code` |
+| Tests | `deepseek/deepseek-v4-flash` | `/test` |
+| Review | `deepseek/deepseek-v4-flash` | `/review` |
 
 ---
 
-## Bestandsstructuur
+## Quality gates
 
-~~~text
+Before the next phase starts, these criteria must be met:
+
+**After architecture**:
+- [ ] All components described in docs/architecture.md
+- [ ] API endpoints identified
+- [ ] Error handling scenarios named
+
+**After implementation**:
+- [ ] Code runs without import errors
+- [ ] manifest.json has a version key
+- [ ] Config flow works in the Home Assistant UI
+
+**After tests**:
+- [ ] Minimum 80% test coverage
+- [ ] All tests pass
+- [ ] Error scenarios tested
+
+**After review**:
+- [ ] No security issues
+- [ ] Documentation complete
+- [ ] Home Assistant best practices followed
+
+---
+
+## File structure
+
+```text
 project-root/
-├── AGENTS.md                    # Dit bestand
-├── .aider.conf.yml              # Aider configuratie
+├── AGENTS.md                    # This file (opencode project instructions)
+├── opencode.json                # opencode config (default model)
+├── README.md                    # Install, configuration and troubleshooting
+├── hacs.json                    # HACS metadata
+├── .opencode/
+│   ├── agent/                   # Subagents: architect, engineer, tester, reviewer
+│   └── command/                 # Commands: /architect, /code, /test, /review
 ├── docs/
-│   ├── architecture.md          # Van architect-agent
-│   ├── test-report.md           # Van tester-agent
-│   ├── review.md                # Van reviewer-agent
-│   └── CHANGELOG.md             # Alle wijzigingen
+│   ├── architecture.md          # From the architect-agent
+│   ├── test-report.md           # From the tester-agent
+│   ├── review.md                # From the reviewer-agent
+│   └── CHANGELOG.md             # All changes
 ├── custom_components/
 │   └── sometoday/
-│       ├── __init__.py
-│       ├── manifest.json
-│       ├── config_flow.py
-│       ├── coordinator.py
-│       ├── sensor.py
-│       ├── const.py
+│       ├── __init__.py          # Setup, runtime_data, entry unload
+│       ├── manifest.json        # Metadata + version
+│       ├── config_flow.py       # Config + options + reauth flow
+│       ├── coordinator.py       # SomTodayDataUpdateCoordinator
+│       ├── api.py               # SomTodayApiClient (injectable session)
+│       ├── auth.py              # SomTodayAuthClient (PKCE + password fallback)
+│       ├── exceptions.py        # Shared error hierarchy
+│       ├── models.py            # Dataclasses + parsers
+│       ├── entity.py            # Shared SomTodayEntity base
+│       ├── sensor.py            # Sensor entities
+│       ├── binary_sensor.py     # Binary sensor entities
+│       ├── calendar.py          # Calendar entity
+│       ├── const.py             # Constants (CONF_*, DEFAULT_*, client IDs)
+│       ├── strings.json         # Translations (source of truth, EN)
 │       └── translations/
-│           └── nl.json
+│           ├── en.json          # English translations (loaded by HA)
+│           └── nl.json          # Dutch translations
+├── pytest.ini                   # asyncio_mode = auto (HA test plugin)
+├── requirements_test.txt        # Test dependencies
 └── tests/
+    ├── conftest.py
+    ├── test_auth.py
+    ├── test_models.py
     ├── test_config_flow.py
+    ├── test_api.py
+    ├── test_translations.py
+    ├── test_manifest.py
+    ├── test_coordinator.py
     └── test_sensor.py
-~~~
+```
 
 ---
 
-
-*Laatste update: 2026-09-10*
-*Versie: 1.0*
+*Last update: 2026-09-11*
+*Version: 2.0*

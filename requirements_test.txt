@@ -1,0 +1,7 @@
+# Test dependencies for the SomToday integration.
+# Install with: pip install -r requirements_test.txt
+pytest
+pytest-asyncio
+pytest-cov
+pytest-homeassistant-custom-component
+aioresponses

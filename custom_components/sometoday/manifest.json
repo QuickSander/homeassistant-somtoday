@@ -1,0 +1,13 @@
+{
+  "domain": "sometoday",
+  "name": "SomToday",
+  "version": "0.2.0",
+  "config_flow": true,
+  "iot_class": "cloud_polling",
+  "integration_type": "hub",
+  "documentation": "https://github.com/sander/sometoday-plugin",
+  "issue_tracker": "https://github.com/sander/sometoday-plugin/issues",
+  "codeowners": ["@sander"],
+  "requirements": [],
+  "loggers": ["custom_components.sometoday"]
+}

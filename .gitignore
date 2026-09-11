@@ -1,1 +1,16 @@
 .aider*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# macOS
+.DS_Store
