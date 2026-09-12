@@ -118,7 +118,7 @@ async def test_setup_entry_creates_coordinator_and_entities(hass: Any) -> None:
     assert isinstance(coordinator, SomTodayDataUpdateCoordinator)
     assert [lesson.id for lesson in coordinator.data.schedule] == ["1"]
     assert len(hass.states.async_entity_ids("calendar")) == 1
-    assert len(hass.states.async_entity_ids("sensor")) == 1
+    assert len(hass.states.async_entity_ids("sensor")) == 2
 
 
 async def test_setup_entry_schedule_failure_is_retryable(hass: Any) -> None:
@@ -154,7 +154,7 @@ async def test_unload_entry_unloads_platforms(hass: Any) -> None:
             *hass.states.async_entity_ids("calendar"),
             *hass.states.async_entity_ids("sensor"),
         ]
-        assert len(entity_ids) == 2
+        assert len(entity_ids) == 3
 
         assert await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()

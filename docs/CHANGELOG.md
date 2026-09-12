@@ -3,6 +3,35 @@
 All notable changes to the SomToday Home Assistant integration are documented
 in this file.
 
+## [0.7.0] - 2026-09-12
+
+### Added
+
+- **`sensor.first_lesson_of_tomorrow` (architecture §8.1).** A sibling of
+  `first_lesson_of_today`: its state is the timezone-aware start timestamp of
+  the first lesson on the **local** date of tomorrow, and it is `unknown` when
+  there is none. Attributes mirror the today sensor (`subject`, `room`,
+  `teacher`, `end`, `lesson_id`) with the day's lesson count exposed as
+  `lessons_tomorrow`.
+- `sensor.py`: the first-lesson logic now lives in a shared
+  `_SomTodayFirstLessonBase` (`_key`, `_day_offset`, `_count_attribute`);
+  `SomTodayFirstLessonSensor` (today) and `SomTodayFirstLessonTomorrowSensor`
+  (tomorrow) only set those class attributes. Both are registered in
+  `ENTITY_CONSTRUCTORS`.
+- `strings.json`/`translations`: added the
+  `entity.sensor.first_lesson_of_tomorrow` name ("First lesson of tomorrow" /
+  "Eerste les morgen") with identical key sets across all three files.
+- `README.md`: documented the first-lesson sensor **attributes** in a table,
+  including the previously omitted `lesson_id`, added the new entity row and the
+  state-stays-in-the-past note.
+- Tests (`tests/test_sensor.py`): tomorrow sensor state/attribute mapping
+  (earliest-of-tomorrow, today ignored, unsorted input), `None` when tomorrow is
+  free, entity metadata and EN/NL translations; the full-setup test now asserts
+  both timestamp sensors render. `tests/test_init.py` asserts two sensors are
+  forwarded/unloaded. Total: 269 tests, 100% line coverage, all SomToday HTTP
+  mocked.
+- `manifest.json` bumped to `0.7.0`.
+
 ## [0.6.0] - 2026-09-12
 
 ### Added

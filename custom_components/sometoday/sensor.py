@@ -1,9 +1,10 @@
 """Sensor platform for the SomToday integration.
 
-The first sensor is ``first_lesson_of_today``: it drives an alarm clock, so its
-state is the start timestamp of the first lesson on the **local** date of today.
-The lesson may already have started or finished; it is still "today's first
-lesson". The state is ``None`` when there is no lesson today.
+The first sensors are ``first_lesson_of_today`` and ``first_lesson_of_tomorrow``:
+they drive an alarm clock, so their state is the start timestamp of the first
+lesson on the **local** date of today (respectively tomorrow). The lesson may
+already have started or finished; it is still "that day's first lesson". The
+state is ``None`` when there is no lesson on that day.
 
 The platform is structured around a list of entity constructors so the other
 sensors from docs/architecture.md section 8.1 can be added without touching the
@@ -13,7 +14,7 @@ platform setup.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
@@ -47,11 +48,20 @@ async def async_setup_entry(
     )
 
 
-class SomTodayFirstLessonSensor(SomTodayEntity, SensorEntity):
-    """Start timestamp of the first lesson on the local date of today."""
+class _SomTodayFirstLessonBase(SomTodayEntity, SensorEntity):
+    """Start timestamp of the first lesson on a given local date.
 
-    _attr_translation_key = "first_lesson_of_today"
+    Subclasses set ``_key`` (also the unique-id suffix and translation key),
+    ``_day_offset`` (days relative to the local date of "now") and
+    ``_count_attribute`` (the attribute that exposes the number of lessons).
+    """
+
     _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    # Set by subclasses.
+    _key: str
+    _day_offset: int
+    _count_attribute: str
 
     def __init__(
         self,
@@ -60,14 +70,15 @@ class SomTodayFirstLessonSensor(SomTodayEntity, SensorEntity):
     ) -> None:
         """Initialise the sensor entity."""
         super().__init__(coordinator, entry)
-        self._attr_unique_id = f"{entry.entry_id}_first_lesson_of_today"
+        self._attr_translation_key = self._key
+        self._attr_unique_id = f"{entry.entry_id}_{self._key}"
         self._first_lesson: Lesson | None = None
-        self._today_lessons: list[Lesson] = []
+        self._day_lessons: list[Lesson] = []
         self._refresh_derived(dt_util.now())
 
     @property
     def native_value(self) -> datetime | None:
-        """Return the start of today's first lesson, or ``None`` when free."""
+        """Return the start of the target day's first lesson, or ``None``."""
         if self._first_lesson is None:
             return None
         return dt_util.as_local(self._first_lesson.start)
@@ -83,7 +94,7 @@ class SomTodayFirstLessonSensor(SomTodayEntity, SensorEntity):
             # ``end`` is normalised so the attribute is always timezone-aware,
             # matching the TIMESTAMP state.
             "end": dt_util.as_local(first.end),
-            "lessons_today": len(self._today_lessons),
+            self._count_attribute: len(self._day_lessons),
         }
         if first.subject is not None:
             attributes["subject"] = first.subject
@@ -106,7 +117,7 @@ class SomTodayFirstLessonSensor(SomTodayEntity, SensorEntity):
         super()._handle_coordinator_update()
 
     def _refresh_derived(self, now: datetime) -> None:
-        """Cache today's first lesson and lesson list for a single ``now``.
+        """Cache the target day's first lesson and lesson list for a ``now``.
 
         The coordinator's schedule is already scoped per student and sorted, but
         the earliest lesson is selected explicitly so the sensor stays correct
@@ -116,16 +127,16 @@ class SomTodayFirstLessonSensor(SomTodayEntity, SensorEntity):
         """
         if self.coordinator.data is None:
             self._first_lesson = None
-            self._today_lessons = []
+            self._day_lessons = []
             return
 
-        today = now.date()
+        target = now.date() + timedelta(days=self._day_offset)
         lessons = [
             lesson
             for lesson in self.coordinator.data.schedule
-            if dt_util.as_local(lesson.start).date() == today
+            if dt_util.as_local(lesson.start).date() == target
         ]
-        self._today_lessons = lessons
+        self._day_lessons = lessons
         self._first_lesson = (
             min(lessons, key=lambda lesson: dt_util.as_local(lesson.start))
             if lessons
@@ -133,6 +144,25 @@ class SomTodayFirstLessonSensor(SomTodayEntity, SensorEntity):
         )
 
 
-# Registered after the class definition so the constructor tuple can reference
-# the entity class.
-ENTITY_CONSTRUCTORS: tuple[EntityConstructor, ...] = (SomTodayFirstLessonSensor,)
+class SomTodayFirstLessonSensor(_SomTodayFirstLessonBase):
+    """Start timestamp of the first lesson on the local date of today."""
+
+    _key = "first_lesson_of_today"
+    _day_offset = 0
+    _count_attribute = "lessons_today"
+
+
+class SomTodayFirstLessonTomorrowSensor(_SomTodayFirstLessonBase):
+    """Start timestamp of the first lesson on the local date of tomorrow."""
+
+    _key = "first_lesson_of_tomorrow"
+    _day_offset = 1
+    _count_attribute = "lessons_tomorrow"
+
+
+# Registered after the class definitions so the constructor tuple can reference
+# the entity classes.
+ENTITY_CONSTRUCTORS: tuple[EntityConstructor, ...] = (
+    SomTodayFirstLessonSensor,
+    SomTodayFirstLessonTomorrowSensor,
+)

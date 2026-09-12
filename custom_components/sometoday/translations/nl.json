@@ -73,6 +73,9 @@
     "sensor": {
       "first_lesson_of_today": {
         "name": "Eerste les vandaag"
+      },
+      "first_lesson_of_tomorrow": {
+        "name": "Eerste les morgen"
       }
     }
   }

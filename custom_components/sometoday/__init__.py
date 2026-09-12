@@ -30,7 +30,7 @@ from .models import SomTodayTokens
 
 _LOGGER = logging.getLogger(__name__)
 
-# The first sensor (``first_lesson_of_today``) and the schedule calendar are
+# The first-lesson sensors (today/tomorrow) and the schedule calendar are
 # implemented; the binary_sensor platform follows in a later slice.
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.CALENDAR]
 

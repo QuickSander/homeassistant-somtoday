@@ -4,12 +4,12 @@ A Home Assistant custom component that logs in to [SomToday](https://www.somtoda
 and (eventually) exposes a student's schedule, homework, grades and absence as
 Home Assistant entities.
 
-> **Current status: authentication, schedule and a first sensor (v0.6.0).**
-> This release installs, authenticates against SomToday, exposes the student's
-> **timetable as a read-only `calendar` entity**, and adds a
-> **`first_lesson_of_today`** timestamp sensor (useful for driving an alarm).
-> Grades, homework, absence and the remaining sensor/binary_sensor entities land
-> in later releases.
+> **Current status: authentication, schedule and the first lesson sensors
+> (v0.7.0).** This release installs, authenticates against SomToday, exposes the
+> student's **timetable as a read-only `calendar` entity**, and adds
+> **`first_lesson_of_today`** and **`first_lesson_of_tomorrow`** timestamp
+> sensors (useful for driving an alarm). Grades, homework, absence and the
+> remaining sensor/binary_sensor entities land in later releases.
 
 ## Requirements
 
@@ -102,10 +102,24 @@ One device is created per student, with these entities:
 |--------|------|-------------|
 | `calendar.<student>` | calendar | The student's timetable (read-only). |
 | `sensor.<student>_first_lesson_of_today` | sensor (timestamp) | Start of the first lesson today; `unknown` on a free day. |
+| `sensor.<student>_first_lesson_of_tomorrow` | sensor (timestamp) | Start of the first lesson tomorrow; `unknown` if there is none. |
 
-The `first_lesson_of_today` sensor exposes `subject`, `room`, `teacher`, `end`
-and `lessons_today` as attributes, and is designed to drive an alarm. For
-example, set a phone alarm 45 minutes before the first lesson, if there is one:
+The `first_lesson_of_today`/`first_lesson_of_tomorrow` sensors expose the
+lesson's details as attributes (missing values are omitted), and are designed to
+drive an alarm. For example, set a phone alarm 45 minutes before the first
+lesson, if there is one:
+
+| Attribute | Type | Meaning |
+|-----------|------|---------|
+| `subject` | string | Subject name (e.g. `Wiskunde`). |
+| `room` | string | Room/location (e.g. `B12`). |
+| `teacher` | string | Teacher abbreviation(s) (e.g. `JDO`). |
+| `end` | timestamp | End of the first lesson (timezone-aware). |
+| `lesson_id` | string | SomToday appointment id. |
+| `lessons_today` / `lessons_tomorrow` | int | Number of lessons on that day. |
+
+The state stays in the past once the lesson has started (it is still "the first
+lesson of the day"), and is `unknown` on a day without lessons.
 
 ```yaml
 automation:

@@ -73,6 +73,9 @@
     "sensor": {
       "first_lesson_of_today": {
         "name": "First lesson of today"
+      },
+      "first_lesson_of_tomorrow": {
+        "name": "First lesson of tomorrow"
       }
     }
   }

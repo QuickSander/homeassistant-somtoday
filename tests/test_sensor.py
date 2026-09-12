@@ -32,7 +32,10 @@ from custom_components.sometoday.coordinator import (
     SomTodayDataUpdateCoordinator,
 )
 from custom_components.sometoday.models import Lesson, Student
-from custom_components.sometoday.sensor import SomTodayFirstLessonSensor
+from custom_components.sometoday.sensor import (
+    SomTodayFirstLessonSensor,
+    SomTodayFirstLessonTomorrowSensor,
+)
 
 STUDENT_ID = 1234
 
@@ -233,6 +236,75 @@ async def test_lesson_started_yesterday_is_not_today(hass: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+# first_lesson_of_tomorrow
+# ---------------------------------------------------------------------------
+async def test_first_lesson_of_tomorrow_state_and_attributes(hass: Any) -> None:
+    """The earliest of tomorrow's lessons is the state, today is ignored."""
+    day = _today_start()
+    today = _lesson(day + timedelta(hours=9), day + timedelta(hours=10), lesson_id="1")
+    early = _lesson(
+        day + timedelta(days=1, hours=8),
+        day + timedelta(days=1, hours=9),
+        lesson_id="2",
+    )
+    late = _lesson(
+        day + timedelta(days=1, hours=11),
+        day + timedelta(days=1, hours=12),
+        lesson_id="3",
+    )
+    # Unsorted input, and a today lesson that must not be selected.
+    coordinator, entry = _coordinator(hass, [late, today, early])
+    entity = SomTodayFirstLessonTomorrowSensor(coordinator, entry)
+
+    assert entity.native_value == early.start
+    assert entity.native_value is not None
+    assert entity.native_value.tzinfo is not None
+
+    attributes = entity.extra_state_attributes
+    assert attributes is not None
+    assert attributes["subject"] == "Wiskunde"
+    assert attributes["room"] == "B12"
+    assert attributes["teacher"] == "JDO"
+    assert attributes["end"] == early.end
+    assert attributes["lesson_id"] == "2"
+    assert attributes["lessons_tomorrow"] == 2
+
+
+async def test_no_lessons_tomorrow_returns_none(hass: Any) -> None:
+    """Only today's lessons leave tomorrow's state and attributes empty."""
+    day = _today_start()
+    today = _lesson(day + timedelta(hours=9), day + timedelta(hours=10))
+    coordinator, entry = _coordinator(hass, [today])
+    entity = SomTodayFirstLessonTomorrowSensor(coordinator, entry)
+
+    assert entity.native_value is None
+    assert entity.extra_state_attributes is None
+
+
+def test_first_lesson_tomorrow_entity_metadata(hass: Any) -> None:
+    """The tomorrow entity carries the shared device metadata and attributes."""
+    coordinator, entry = _coordinator(hass, [])
+    entity = SomTodayFirstLessonTomorrowSensor(coordinator, entry)
+
+    assert entity._attr_has_entity_name is True
+    assert entity._attr_translation_key == "first_lesson_of_tomorrow"
+    assert entity.device_class == SensorDeviceClass.TIMESTAMP
+    assert entity.unique_id == f"{entry.entry_id}_first_lesson_of_tomorrow"
+    assert entity.device_info["identifiers"] == {(DOMAIN, entry.entry_id)}
+    assert entity.device_info["name"] == "SomToday Eli Saado"
+
+
+async def test_first_lesson_tomorrow_name_translations(hass: Any) -> None:
+    """The tomorrow entity name loads from the translation key in both locales."""
+    english = await async_get_translations(hass, "en", "entity", [DOMAIN])
+    dutch = await async_get_translations(hass, "nl", "entity", [DOMAIN])
+
+    key = f"component.{DOMAIN}.entity.sensor.first_lesson_of_tomorrow.name"
+    assert english[key] == "First lesson of tomorrow"
+    assert dutch[key] == "Eerste les morgen"
+
+
+# ---------------------------------------------------------------------------
 # Timezone robustness
 # ---------------------------------------------------------------------------
 async def test_aware_plus_two_lesson_yields_same_instant(hass: Any) -> None:
@@ -399,7 +471,10 @@ async def test_sensor_state_renders_after_setup(hass: Any) -> None:
         await hass.async_block_till_done()
 
     entity_ids = hass.states.async_entity_ids("sensor")
-    assert entity_ids == ["sensor.somtoday_eli_saado_first_lesson_of_today"]
+    assert entity_ids == [
+        "sensor.somtoday_eli_saado_first_lesson_of_today",
+        "sensor.somtoday_eli_saado_first_lesson_of_tomorrow",
+    ]
     state = hass.states.get(entity_ids[0])
     assert state is not None
     # HA stores a TIMESTAMP as a timezone-aware ISO string in UTC.
@@ -410,6 +485,14 @@ async def test_sensor_state_renders_after_setup(hass: Any) -> None:
     )
     assert state.attributes["lessons_today"] == 1
     assert state.attributes["subject"] == "Wiskunde"
+
+    # There is no lesson tomorrow in this setup, so that sensor is unknown.
+    tomorrow = hass.states.get(entity_ids[1])
+    assert tomorrow is not None
+    assert tomorrow.state == "unknown"
+    assert tomorrow.attributes["friendly_name"] == (
+        "SomToday Eli Saado First lesson of tomorrow"
+    )
 
 
 # ---------------------------------------------------------------------------
