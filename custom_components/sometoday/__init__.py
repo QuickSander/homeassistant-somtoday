@@ -19,6 +19,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import SomTodayApiClient
 from .auth import SomTodayAuth
+from .const import CONF_ACCOUNT_ID, CONF_STUDENT_NAME
 from .exceptions import (
     SomTodayError,
     SomtodayInvalidAuth,
@@ -65,6 +66,15 @@ async def async_setup_entry(
         raise ConfigEntryAuthFailed(str(err)) from err
     except SomTodayError as err:
         raise ConfigEntryNotReady(str(err)) from err
+
+    # The refresh succeeded, so the stored session is valid. Log it once at INFO
+    # so a working setup (and a broken one) is visible without debug logging.
+    # Only the student name and account id are logged, never tokens.
+    _LOGGER.info(
+        "SomToday: authenticated as %s (account %s)",
+        entry.data.get(CONF_STUDENT_NAME) or "unknown student",
+        entry.data.get(CONF_ACCOUNT_ID) or "unknown account",
+    )
 
     # SomToday rotates refresh tokens. Persist the rotated token (and account
     # metadata) so the next restart keeps working. The coordinator will own this

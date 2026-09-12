@@ -66,6 +66,9 @@ in this file.
   message instead of being exchanged.
 - Clearer `invalid_auth` message noting the code may have expired or been used,
   and to paste the redirect immediately after logging in.
+- `async_setup_entry` logs `SomToday: authenticated as <student> (account <id>)`
+  at INFO once the stored session is refreshed, so a working setup (and a broken
+  one) is visible in the log without debug logging. No tokens are logged.
 
 ### Removed
 

@@ -105,6 +105,15 @@ logger:
 
 Then add the integration as described above. A successful authorization creates
 a config entry; check **Settings → Devices & Services** for the SomToday entry.
+On every setup/reload you will see this line in the log:
+
+```
+SomToday: authenticated as <student> (account <id>)
+```
+
+If instead you get a "Reauthenticate" prompt, the stored refresh token was
+rejected; if setup keeps retrying, the token endpoint was unreachable. Neither
+message contains a token.
 
 ### Troubleshooting
 

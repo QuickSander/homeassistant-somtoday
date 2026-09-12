@@ -599,15 +599,18 @@ async def test_options_flow_schedules_reload(hass: Any) -> None:
 # ---------------------------------------------------------------------------
 # Setup entry
 # ---------------------------------------------------------------------------
-async def test_setup_entry_refreshes_token(hass: Any) -> None:
+async def test_setup_entry_refreshes_token(hass: Any, caplog: Any) -> None:
     """Setting up an entry refreshes and persists the rotated token."""
     entry = _make_entry(hass, refresh_token="old-refresh")
 
     async def _refresh(session: Any, refresh_token: str, **kwargs: Any) -> Any:
         return _tokens("new-refresh")
 
-    with patch(
-        "custom_components.sometoday.auth.async_refresh_tokens", new=_refresh
+    with (
+        caplog.at_level("INFO"),
+        patch(
+            "custom_components.sometoday.auth.async_refresh_tokens", new=_refresh
+        ),
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -615,6 +618,8 @@ async def test_setup_entry_refreshes_token(hass: Any) -> None:
     assert entry.state is ConfigEntryState.LOADED
     assert entry.runtime_data.api.base_url == API_URL
     assert entry.data[CONF_REFRESH_TOKEN] == "new-refresh"
+    assert "authenticated as Eli Saado (account account-1)" in caplog.text
+    assert "new-refresh" not in caplog.text
 
 
 async def test_setup_entry_keeps_refresh_token_when_not_rotated(hass: Any) -> None:
