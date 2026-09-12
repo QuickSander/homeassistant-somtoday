@@ -3,6 +3,19 @@
 All notable changes to the SomToday Home Assistant integration are documented
 in this file.
 
+## [0.7.1] - 2026-09-12
+
+### Added
+
+- **Local brand images.** `custom_components/sometoday/brand/` now ships
+  `icon.png` (256×256), `icon@2x.png` (512×512), `logo.png` and `logo@2x.png`,
+  so Home Assistant shows the SomToday icon/logo for the integration instead of
+  the placeholder. Local brand images are used by Home Assistant **2026.3+** and
+  take precedence over the central `home-assistant/brands` repository, so no
+  pull request there is required. The artwork is the official SomToday logo,
+  used for identification only.
+- `manifest.json` bumped to `0.7.1`.
+
 ## [0.7.0] - 2026-09-12
 
 ### Added

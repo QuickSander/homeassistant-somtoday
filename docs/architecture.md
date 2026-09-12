@@ -864,6 +864,7 @@ custom_components/sometoday/
 ├── entity.py            # Shared SomTodayEntity base (implemented)
 ├── const.py             # Constants (CONF_*, DEFAULT_*, client ID)
 ├── strings.json         # Translations (source of truth, EN)
+├── brand/               # Local brand images (HA 2026.3+); icon.png, logo.png, …
 └── translations/
     ├── en.json          # English translations (loaded by HA)
     └── nl.json          # Dutch translations
@@ -884,7 +885,7 @@ requirements_test.txt    # Test dependencies (pytest, HA plugin, aioresponses)
 {
   "domain": "sometoday",
   "name": "SomToday",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "config_flow": true,
   "iot_class": "cloud_polling",
   "integration_type": "hub",
