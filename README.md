@@ -4,11 +4,12 @@ A Home Assistant custom component that logs in to [SomToday](https://www.somtoda
 and (eventually) exposes a student's schedule, homework, grades and absence as
 Home Assistant entities.
 
-> **Current status: authentication + schedule (v0.5.0).**
-> This release installs, authenticates against SomToday, and exposes the
-> student's **timetable as a read-only `calendar` entity** (per student). Grades,
-> homework, absence and the sensor/binary_sensor entities land in later releases.
-> There are no sensors yet.
+> **Current status: authentication, schedule and a first sensor (v0.6.0).**
+> This release installs, authenticates against SomToday, exposes the student's
+> **timetable as a read-only `calendar` entity**, and adds a
+> **`first_lesson_of_today`** timestamp sensor (useful for driving an alarm).
+> Grades, homework, absence and the remaining sensor/binary_sensor entities land
+> in later releases.
 
 ## Requirements
 
@@ -92,6 +93,37 @@ After setup you can open **Configure** on the integration to change:
 > The `scan_interval` and `schedule_days_ahead` options affect the coordinator
 > and the calendar immediately (the entry reloads when you save). The
 > homework/grades/absence toggles take effect once those entities are added.
+
+### Entities
+
+One device is created per student, with these entities:
+
+| Entity | Type | Description |
+|--------|------|-------------|
+| `calendar.<student>` | calendar | The student's timetable (read-only). |
+| `sensor.<student>_first_lesson_of_today` | sensor (timestamp) | Start of the first lesson today; `unknown` on a free day. |
+
+The `first_lesson_of_today` sensor exposes `subject`, `room`, `teacher`, `end`
+and `lessons_today` as attributes, and is designed to drive an alarm. For
+example, set a phone alarm 45 minutes before the first lesson, if there is one:
+
+```yaml
+automation:
+  - alias: "School alarm"
+    triggers:
+      - trigger: time
+        at: "06:00:00"
+    actions:
+      - if:
+          - condition: template
+            value_template: "{{ states('sensor.somtoday_eli_saado_first_lesson_of_today') not in ['unknown', 'unavailable'] }}"
+        then:
+          - action: notify.mobile_app_phone
+            data:
+              message: >-
+                First lesson {{ state_attr('sensor.somtoday_eli_saado_first_lesson_of_today', 'subject') }}
+                at {{ as_timestamp(states('sensor.somtoday_eli_saado_first_lesson_of_today')) | timestamp_custom('%H:%M') }}
+```
 
 ## Testing the authorization
 

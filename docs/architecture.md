@@ -114,7 +114,8 @@ framework:
   (`coordinator.py`) — implemented for the schedule; grades/homework/absence
   extend it in later slices.
 - An OO API client with an **injectable `aiohttp.ClientSession`** (`api.py`).
-- Platforms: `calendar` (implemented); `sensor`, `binary_sensor` (later).
+- Platforms: `calendar` and `sensor` (the `first_lesson_of_today` sensor) are
+  implemented; the remaining `sensor` entities and `binary_sensor` come later.
 - All parsing isolated in a typed model layer (`models.py`) so entities never
   touch raw JSON.
 
@@ -667,9 +668,10 @@ calendar distinguish homework from tests (see [§8](#8-entity-model)).
 
 ## 8. Entity model
 
-> **Partly implemented (v0.5.0).** The read-only `calendar` entity is
-> implemented; the `sensor` and `binary_sensor` tables below are later slices but
-> the device/identity rules already apply.
+> **Partly implemented (v0.6.0).** The read-only `calendar` entity and the
+> `first_lesson_of_today` sensor are implemented; the rest of the `sensor` table
+> and the `binary_sensor` platform are later slices, but the device/identity
+> rules already apply.
 
 One **device per config entry** (per student). All entities set
 `_attr_has_entity_name = True`, use translation keys, and share:
@@ -690,8 +692,12 @@ Unique IDs: `f"{entry.entry_id}_{key}"`. Availability follows
 
 ### 8.1 `sensor` platform
 
+> **Partly implemented (v0.6.0).** `first_lesson_of_today` is implemented; the
+> remaining rows are later slices.
+
 | Key | Translation key | Device class | State class | State |
 |-----|-----------------|--------------|-------------|-------|
+| `first_lesson_of_today` | `first_lesson_of_today` | `TIMESTAMP` | — | Start of the first lesson on the local date of today (`None` when free) |
 | `next_lesson` | `next_lesson` | `TIMESTAMP` | — | Start of the next lesson |
 | `next_lesson_name` | `next_lesson_name` | — | — | Subject of the next lesson |
 | `next_lesson_room` | `next_lesson_room` | — | — | Room/location of the next lesson |
@@ -704,6 +710,12 @@ Unique IDs: `f"{entry.entry_id}_{key}"`. Availability follows
 | `latest_grade` | `latest_grade` | — | `MEASUREMENT` | Most recently entered grade |
 | `grades_count` | `grades_count` | — | `MEASUREMENT` | Number of grades in the period |
 | `absence_recent` | `absence_recent` | — | `MEASUREMENT` | Unauthorised absence records this week |
+
+`first_lesson_of_today` drives an alarm clock: its state is the start of the
+earliest lesson on the **local** date of today (a lesson that already started or
+finished still counts), and it exposes the lesson's `subject`, `room`,
+`teacher`, `end`, `lesson_id` and the `lessons_today` count as attributes
+(missing values are omitted). The state is `None` when there is no lesson today.
 
 Grade sensors expose per-subject grades as **attributes** (`grades: {subject:
 grade}`) and the raw list as `grades_raw` (truncated), so users can build
@@ -785,7 +797,7 @@ When the rotating refresh token changes, persist `auth.as_entry_data()`
 
 ```python
 DOMAIN = "sometoday"
-PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.CALENDAR]  # only CALENDAR for now
+PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.CALENDAR]  # SENSOR + CALENDAR for now
 
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_API_URL = "api_url"
@@ -840,7 +852,7 @@ custom_components/sometoday/
 ├── auth.py              # SomTodayAuth (browser authorization-code + PKCE)
 ├── exceptions.py        # Shared error hierarchy + SomtodayInvalidAuth (§5.1)
 ├── models.py            # Dataclasses + parsers
-├── sensor.py            # Sensor entities (future work)
+├── sensor.py            # Sensor entities (first_lesson_of_today implemented)
 ├── binary_sensor.py     # Binary sensor entities (future work)
 ├── calendar.py          # Calendar entity (implemented)
 ├── entity.py            # Shared SomTodayEntity base (implemented)
@@ -866,7 +878,7 @@ requirements_test.txt    # Test dependencies (pytest, HA plugin, aioresponses)
 {
   "domain": "sometoday",
   "name": "SomToday",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "config_flow": true,
   "iot_class": "cloud_polling",
   "integration_type": "hub",
@@ -925,7 +937,8 @@ session. `version` is mandatory for custom components.
   persistence, and mixed naive/aware timestamp handling.
 - Calendar tests cover `event` (current/next), `async_get_events` from the cache
   and out-of-range fetch, tz-aware event mapping, read-only, and entity
-  metadata. Sensor/binary_sensor tests are still future work.
+  metadata. Sensor tests cover `first_lesson_of_today` (state, attributes,
+  timezone, availability, setup); `binary_sensor` tests are still future work.
 
 ## 14. Corrections to the previous draft
 

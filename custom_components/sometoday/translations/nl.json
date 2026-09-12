@@ -69,6 +69,11 @@
   "entity": {
     "calendar": {
       "name": "Rooster"
+    },
+    "sensor": {
+      "first_lesson_of_today": {
+        "name": "Eerste les vandaag"
+      }
     }
   }
 }

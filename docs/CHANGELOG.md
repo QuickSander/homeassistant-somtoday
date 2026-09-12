@@ -3,6 +3,39 @@
 All notable changes to the SomToday Home Assistant integration are documented
 in this file.
 
+## [0.6.0] - 2026-09-12
+
+### Added
+
+- **`sensor` platform with `first_lesson_of_today` (architecture §8.1).** The
+  sensor drives an alarm clock: its state is the timezone-aware start timestamp
+  of the first lesson on the **local** date of today. A lesson that already
+  started or finished is still returned; the state is `unknown` when there is no
+  lesson today (or no coordinator snapshot).
+- `sensor.py` (new): `SomTodayFirstLessonSensor` (bound to the coordinator via
+  the shared `SomTodayEntity`) with `_attr_translation_key =
+  "first_lesson_of_today"`, `_attr_device_class = SensorDeviceClass.TIMESTAMP`
+  and unique id `f"{entry.entry_id}_first_lesson_of_today"`. The earliest of
+  today's lessons is selected from `coordinator.data.schedule`; datetimes are
+  normalised with `dt_util.as_local`, so an offset-less (`naive`) timestamp is
+  handled without raising. Attributes are `subject`, `room`, `teacher`, `end`,
+  `lesson_id` and `lessons_today` (missing values are omitted; nothing sensitive
+  is exposed). The platform is set up from a tuple of entity constructors so the
+  remaining §8.1 sensors can be added without touching the platform setup.
+- `__init__.py`: `PLATFORMS` now forwards `Platform.SENSOR` in addition to
+  `Platform.CALENDAR` (forward/unload already generic).
+- `strings.json`/`translations`: added the
+  `entity.sensor.first_lesson_of_today` name ("First lesson of today" /
+  "Eerste les vandaag") with identical key sets across all three files.
+- Tests (`tests/test_sensor.py`, new): state/attribute mapping for several of
+  today's lessons, `None` when there is no lesson today, a lesson that already
+  started, `+02:00` and naive datetimes, entity metadata (translation key,
+  device class, unique id, device info), the entity name in both locales, and
+  `unavailable` after a failed coordinator update. `tests/test_init.py` now
+  asserts the `sensor` platform is forwarded and unloaded. Total: 265 tests,
+  100% line coverage, all SomToday HTTP mocked.
+- `manifest.json` bumped to `0.6.0`.
+
 ## [0.5.0] - 2026-09-12
 
 ### Added

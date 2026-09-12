@@ -69,6 +69,11 @@
   "entity": {
     "calendar": {
       "name": "Schedule"
+    },
+    "sensor": {
+      "first_lesson_of_today": {
+        "name": "First lesson of today"
+      }
     }
   }
 }

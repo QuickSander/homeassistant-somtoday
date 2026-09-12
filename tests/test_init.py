@@ -102,8 +102,8 @@ def _patched_setup(
         yield
 
 
-async def test_setup_entry_creates_coordinator_and_calendar(hass: Any) -> None:
-    """Setup builds the coordinator and forwards the calendar platform."""
+async def test_setup_entry_creates_coordinator_and_entities(hass: Any) -> None:
+    """Setup builds the coordinator and forwards the calendar and sensor platforms."""
     entry = _make_entry(hass)
 
     with _patched_setup(
@@ -118,6 +118,7 @@ async def test_setup_entry_creates_coordinator_and_calendar(hass: Any) -> None:
     assert isinstance(coordinator, SomTodayDataUpdateCoordinator)
     assert [lesson.id for lesson in coordinator.data.schedule] == ["1"]
     assert len(hass.states.async_entity_ids("calendar")) == 1
+    assert len(hass.states.async_entity_ids("sensor")) == 1
 
 
 async def test_setup_entry_schedule_failure_is_retryable(hass: Any) -> None:
@@ -142,15 +143,18 @@ async def test_setup_entry_invalid_auth_triggers_reauth(hass: Any) -> None:
     assert entry.state is ConfigEntryState.SETUP_ERROR
 
 
-async def test_unload_entry_unloads_calendar(hass: Any) -> None:
-    """Unloading the entry unloads the calendar platform."""
+async def test_unload_entry_unloads_platforms(hass: Any) -> None:
+    """Unloading the entry unloads the calendar and sensor platforms."""
     entry = _make_entry(hass)
 
     with _patched_setup(appointments=[_raw_lesson()]):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
-        entity_ids = hass.states.async_entity_ids("calendar")
-        assert len(entity_ids) == 1
+        entity_ids = [
+            *hass.states.async_entity_ids("calendar"),
+            *hass.states.async_entity_ids("sensor"),
+        ]
+        assert len(entity_ids) == 2
 
         assert await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()
