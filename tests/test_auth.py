@@ -216,6 +216,36 @@ def test_extract_code_no_code(pasted: str) -> None:
     assert str(err.value) == "no_code"
 
 
+def test_extract_code_rejects_sso_callback() -> None:
+    """A Microsoft Entra ID callback is rejected with its own reason."""
+    pasted = (
+        "https://inloggen.somtoday.nl/oidc?code=1.AQUAabc&state=dc4c605eb4"
+        "&session_state=008b30ea-6861-91ea-e789-1a5895bb19ef"
+    )
+
+    with pytest.raises(ValueError) as err:
+        extract_code(pasted, "STATE")
+
+    assert str(err.value) == "sso_callback"
+
+
+def test_extract_code_strips_quotes_around_location() -> None:
+    """A quoted Location value has its quotes stripped before matching."""
+    pasted = (
+        "HTTP/1.1 302 Found\r\n"
+        'Location: "somtoday://callback?code=REALCODE&state=STATE"\r\n'
+    )
+
+    assert extract_code(pasted, "STATE") == "REALCODE"
+
+
+def test_extract_code_value_stops_at_trailing_bracket() -> None:
+    """Trailing punctuation after the code is not captured."""
+    pasted = "somtoday://callback?code=REALCODE&state=STATE>"
+
+    assert extract_code(pasted, "STATE") == "REALCODE"
+
+
 class _BodyErrorResponse:
     """A response whose JSON body read raises a scripted error."""
 
@@ -253,6 +283,7 @@ async def test_exchange_code_body_and_headers(
         "code": "THECODE",
         "code_verifier": "VERIFIER",
         "client_id": CLIENT_ID_APP,
+        "redirect_uri": REDIRECT_URI,
         "scope": SCOPE,
         "session": SESSION_NO_SESSION,
     }
@@ -273,6 +304,32 @@ async def test_exchange_code_invalid_grant_is_definitive(
 
     with pytest.raises(SomtodayInvalidAuth):
         await async_exchange_code(session, "THECODE", "VERIFIER")
+
+
+@pytest.mark.asyncio
+async def test_exchange_logs_oauth_error_description(
+    fake_session: Any, fake_response: Any, caplog: Any
+) -> None:
+    """A failed exchange logs the OAuth2 error/description but never secrets."""
+    session = fake_session(
+        [
+            fake_response(
+                400,
+                json_data={
+                    "error": "invalid_grant",
+                    "error_description": "AADB2C90088: code already redeemed",
+                },
+            )
+        ]
+    )
+
+    with caplog.at_level("WARNING"), pytest.raises(SomtodayInvalidAuth):
+        await async_exchange_code(session, "THECODE", "VERIFIER")
+
+    assert "invalid_grant" in caplog.text
+    assert "already redeemed" in caplog.text
+    assert "THECODE" not in caplog.text
+    assert "VERIFIER" not in caplog.text
 
 
 @pytest.mark.asyncio

@@ -345,6 +345,26 @@ async def test_user_flow_invalid_url(hass: Any) -> None:
     assert result["errors"] == {"base": "invalid_url"}
 
 
+async def test_user_flow_sso_callback_paste(hass: Any) -> None:
+    """Pasting the Microsoft Entra ID callback reports sso_callback."""
+    with _patched_login():
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                CONF_REDIRECT_URL: (
+                    "https://inloggen.somtoday.nl/oidc?code=1.AQUAabc"
+                    "&state=dc4c605eb4&session_state=008b30ea-1234"
+                )
+            },
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "sso_callback"}
+
+
 async def test_authorize_url_kept_on_recoverable_paste(hass: Any) -> None:
     """A paste mistake must not invalidate the user's open login."""
     with _patched_login():

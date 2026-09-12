@@ -251,6 +251,8 @@ class SomTodayConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "state_mismatch"
             elif reason == "login_page":
                 errors["base"] = "login_page"
+            elif reason == "sso_callback":
+                errors["base"] = "sso_callback"
             else:
                 errors["base"] = "invalid_url"
             # Recoverable: keep the current authorize URL.

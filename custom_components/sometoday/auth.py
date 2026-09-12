@@ -59,10 +59,16 @@ _LOGGER = logging.getLogger(__name__)
 
 # Match ``code=`` / ``state=`` / ``auth=`` as query parameters, never as a
 # prefix of ``code_challenge=`` / ``code_challenge_method=`` and never as a
-# header value such as ``Set-Cookie: code=...``.
-_CODE_RE = re.compile(r"[?&]code=([^&\s\r\n]+)")
-_STATE_RE = re.compile(r"[?&]state=([^&\s\r\n]+)")
+# header value such as ``Set-Cookie: code=...``. The value class also stops at
+# quotes/brackets/commas so a copied header value cannot smuggle trailing
+# punctuation into the code.
+_QUERY_VALUE = r"""([^&\s\r\n"'<>;,]+)"""
+_CODE_RE = re.compile(rf"[?&]code={_QUERY_VALUE}")
+_STATE_RE = re.compile(rf"[?&]state={_QUERY_VALUE}")
 _AUTH_RE = re.compile(r"[?&]auth=")
+# A Microsoft Entra ID (SSO) callback, e.g.
+# https://inloggen.somtoday.nl/oidc?code=...&state=...&session_state=...
+_SESSION_STATE_RE = re.compile(r"[?&]session_state=")
 # A pasted DevTools/response-header block: prefer the ``Location`` line so a
 # stray ``code=`` in a cookie header can never win.
 _LOCATION_RE = re.compile(r"(?im)^\s*location\s*:\s*(\S+)")
@@ -127,6 +133,8 @@ def extract_code(pasted: str, expected_state: str | None = None) -> str:
 
     - ``login_page``: the paste happened before login completed (it contains
       ``auth=`` or the SomToday login host);
+    - ``sso_callback``: the paste is the Microsoft Entra ID callback
+      (``/oidc?...&session_state=...``), an intermediate SSO step;
     - ``state_mismatch``: a ``state`` parameter is present but does not match
       the value generated for this flow;
     - ``no_code``: no usable code could be found.
@@ -140,7 +148,13 @@ def extract_code(pasted: str, expected_state: str | None = None) -> str:
     # When a full response-header block was pasted, use its ``Location`` line so
     # a ``Set-Cookie: code=...`` header can never be mistaken for the code.
     if location_match := _LOCATION_RE.search(text):
-        text = location_match.group(1)
+        text = location_match.group(1).strip().strip("\"'")
+
+    # A Microsoft Entra ID callback (``session_state=``) is an intermediate SSO
+    # step: its ``code`` is SomToday's internal Microsoft code and can never be
+    # exchanged by us. Reject it with its own reason.
+    if _SESSION_STATE_RE.search(text):
+        raise ValueError("sso_callback")
 
     code_match = _CODE_RE.search(text)
     state_match = _STATE_RE.search(text)
@@ -184,6 +198,7 @@ async def async_exchange_code(
         "code": code,
         "code_verifier": code_verifier,
         "client_id": client_id,
+        "redirect_uri": REDIRECT_URI,
         "scope": SCOPE,
         "session": SESSION_NO_SESSION,
     }
@@ -257,16 +272,28 @@ async def _async_token_request(
         _release(response)
 
 
-async def _read_oauth_error(response: Any) -> str | None:
-    """Return the OAuth2 ``error`` code from an error response, if present."""
+def _truncate(value: str | None, limit: int = 300) -> str:
+    """Return a bounded, single-line version of ``value`` for logging."""
+    if not value:
+        return "-"
+    text = " ".join(str(value).split())
+    return text if len(text) <= limit else f"{text[:limit]}…"
+
+
+async def _read_oauth_error(response: Any) -> tuple[str | None, str | None]:
+    """Return the OAuth2 ``error`` and ``error_description``, if present."""
     try:
         payload = await response.json(content_type=None)
     except (aiohttp.ClientError, TimeoutError, ValueError, TypeError):
-        return None
+        return None, None
     if isinstance(payload, Mapping):
         error = payload.get("error")
-        return str(error) if error else None
-    return None
+        description = payload.get("error_description")
+        return (
+            str(error) if error else None,
+            str(description) if description else None,
+        )
+    return None, None
 
 
 async def _parse_token_response(
@@ -280,7 +307,16 @@ async def _parse_token_response(
     status = response.status
 
     if status != 200:
-        error = await _read_oauth_error(response)
+        error, description = await _read_oauth_error(response)
+        # Log the OAuth2 error so a failed exchange is diagnosable from the HA
+        # log. Only the error code/description are logged, never the code,
+        # verifier or any token.
+        _LOGGER.warning(
+            "SomToday token request failed: HTTP %s error=%s description=%s",
+            status,
+            error or "unknown",
+            _truncate(description),
+        )
         if status == 400 and error == "invalid_grant":
             raise SomtodayInvalidAuth(
                 "SomToday rejected the authorization code (invalid_grant)"

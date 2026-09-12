@@ -57,6 +57,15 @@ flow as the official app:
    > DevTools (F12) → **Network** *before* finishing the login, click the request
    > to `somtoday.nl`, and copy the `Location:` response header. You can also use
    > a desktop browser/profile without the SomToday app installed.
+
+   > **Timing matters.** SomToday's authorization code is single-use and
+   > short-lived. Have the DevTools **Response Headers** pane (or the address
+   > bar) ready *before* you submit, and paste within a few seconds.
+
+   > **Do not paste the Microsoft/SSO callback.** A URL like
+   > `https://inloggen.somtoday.nl/oidc?code=…&state=…&session_state=…` is an
+   > intermediate SSO step; its `code` cannot be exchanged. Keep going until the
+   > browser tries to open `somtoday://…` and use that.
 5. Home Assistant exchanges the code for tokens, reads
    `/rest/v1/account/me` (falling back to `/rest/v1/leerlingen`) and creates the
    config entry. Only the rotating refresh token and account metadata are stored.
@@ -104,7 +113,8 @@ a config entry; check **Settings → Devices & Services** for the SomToday entry
 | `Could not find an authorization code in the pasted text` | You pasted something that is not a redirect URL or code. Copy the `somtoday://…?code=…` URL or just the code. |
 | `It looks like the login was not completed yet` | You pasted the login page (it contains `auth=`) instead of the final redirect. Finish the login first. |
 | `This redirect does not belong to the current login attempt` | The `state` in the pasted URL does not match the shown authorize URL. Start again from the link in the form. |
-| `SomToday rejected the authorization code` | The code was already used or expired. Restart the login from the newly shown URL. |
+| `That is the Microsoft/SSO callback, not the final SomToday redirect` | You pasted the `/oidc?…&session_state=…` URL. Finish the login until the browser tries to open `somtoday://…`. |
+| `SomToday rejected the authorization code` | The code expired, was already used, or failed PKCE. Restart from the newly shown URL and paste immediately; the HA log now records the exact OAuth2 error/description. |
 | `Could not connect to SomToday` | No internet or a temporary SomToday failure. Retry; the form keeps the same authorize URL when it is safe. |
 | `No students were found for this account` | The account has no linked students. |
 | `A different SomToday account signed in` | During reauth a different account was used than the one being repaired. |

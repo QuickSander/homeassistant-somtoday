@@ -21,9 +21,10 @@ in this file.
   - HA exchanges the code server-side at
     `https://inloggen.somtoday.nl/oauth2/token` using the public
     `somtoday-leerling-native` client and PKCE `S256`.
-  - `extract_code()` is forgiving and raises `login_page` / `state_mismatch` /
-    `no_code` reasons; only HTTP 400 + `error=invalid_grant` is a definitive
-    rejection (`SomtodayInvalidAuth`), everything else stays retryable.
+  - `extract_code()` is forgiving and raises `login_page` / `sso_callback` /
+    `state_mismatch` / `no_code` reasons; only HTTP 400 + `error=invalid_grant`
+    is a definitive rejection (`SomtodayInvalidAuth`), everything else stays
+    retryable.
   - Rotating refresh tokens are preserved (and re-persisted) across refreshes;
     a refresh that omits `somtoday_api_url` keeps the previous value.
 - Removed the server-side login code: `SomTodayAuthClient`, `async_get_schools`,
@@ -42,12 +43,29 @@ in this file.
   flow that reloads via `hass.config_entries.async_schedule_reload`.
 - `strings.json`/`translations`: replaced the school/credentials steps with the
   new login step and added the `invalid_url`, `login_page`, `state_mismatch`,
-  `invalid_auth`, `cannot_connect`, `no_students` and `wrong_account` keys.
+  `sso_callback`, `invalid_auth`, `cannot_connect`, `no_students` and
+  `wrong_account` keys.
 - `manifest.json` bumped to `0.3.0`.
 - Tests rewritten for the new flow (`tests/test_auth.py`,
   `tests/test_config_flow.py`, `tests/test_api.py`, `tests/test_models.py`,
-  `tests/test_translations.py`): 135 tests, 99% line coverage, all SomToday HTTP
+  `tests/test_translations.py`): 140 tests, 99% line coverage, all SomToday HTTP
   mocked.
+
+### Fixed
+
+- **Token-exchange failures are now diagnosable.** `_parse_token_response`
+  logs the HTTP status plus the OAuth2 `error`/`error_description` (truncated,
+  never the code/verifier/tokens), so a rejected code reveals whether it
+  expired, was already redeemed or failed PKCE verification.
+- **`redirect_uri` is sent with the code exchange**, matching the authorize
+  request, for servers that require it.
+- **`extract_code` hardened:** query values stop at quotes/brackets/commas so a
+  copied `Location` value cannot smuggle trailing punctuation into the code;
+  surrounding quotes are stripped; a Microsoft Entra ID callback
+  (`/oidc?...&session_state=...`) is rejected with a dedicated `sso_callback`
+  message instead of being exchanged.
+- Clearer `invalid_auth` message noting the code may have expired or been used,
+  and to paste the redirect immediately after logging in.
 
 ### Removed
 
