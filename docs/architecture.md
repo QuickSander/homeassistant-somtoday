@@ -111,9 +111,10 @@ framework:
 
 - `ConfigFlow` + `OptionsFlow` for configuration (`config_flow.py`).
 - `DataUpdateCoordinator` polling every **15 minutes** by default
-  (`coordinator.py`) — future work in this revision.
+  (`coordinator.py`) — implemented for the schedule; grades/homework/absence
+  extend it in later slices.
 - An OO API client with an **injectable `aiohttp.ClientSession`** (`api.py`).
-- Platforms: `sensor`, `binary_sensor`, `calendar` — future work.
+- Platforms: `calendar` (implemented); `sensor`, `binary_sensor` (later).
 - All parsing isolated in a typed model layer (`models.py`) so entities never
   touch raw JSON.
 
@@ -207,8 +208,8 @@ SomTodayApiClient
   - auth: SomTodayAuth
   - base_url: str
   + async_get_account() -> Account
-  + async_get_students() -> list[Student]           # future work
-  + async_get_schedule(start, end) -> list[Lesson]  # future work
+  + async_get_students() -> list[Student]
+  + async_get_appointments(start, end) -> list[dict]   # schedule (implemented)
   + async_get_grades(student_id) -> list[Grade]     # future work
   + async_get_homework(since) -> list[HomeworkItem] # future work
   + async_get_absence(start, end) -> list[Absence]  # future work
@@ -216,17 +217,17 @@ SomTodayApiClient
   - _request(method, path, **kwargs) -> dict          # injects auth + Accept
   - _request_paginated(path, page_size=100) -> list   # Range: items=0-99
 
-SomTodayDataUpdateCoordinator(DataUpdateCoordinator[SomTodayData])   # future work
+SomTodayDataUpdateCoordinator(DataUpdateCoordinator[SomTodayData])  # schedule implemented
   + _async_update_data() -> SomTodayData
 
-SomTodayData (dataclass)                                            # future work
+SomTodayData (dataclass)                             # schedule implemented
   + students: list[Student]
   + schedule: list[Lesson]
-  + grades: list[Grade]
-  + homework: list[HomeworkItem]
-  + absence: list[Absence]
-  + subjects: dict[str, Subject]
-  + new_grades: list[Grade]
+  + grades: list[Grade]                              # future work
+  + homework: list[HomeworkItem]                     # future work
+  + absence: list[Absence]                           # future work
+  + subjects: dict[str, Subject]                     # future work
+  + new_grades: list[Grade]                          # future work
   + updated_at: datetime
 ```
 
@@ -450,8 +451,10 @@ authorize-URL step and the paste/DevTools instructions are localised here.
 
 ## 5. DataUpdateCoordinator
 
-> **Future work.** Not implemented in this revision (authentication only).
-> Retained as forward reference.
+> **Implemented for the schedule slice (v0.5.0).** The coordinator polls
+> `/rest/v1/afspraken` for the entry's student and exposes
+> `SomTodayData(schedule, students, updated_at)`; grades/homework/absence are
+> added to the same coordinator in later slices.
 
 ```text
 SomTodayDataUpdateCoordinator(DataUpdateCoordinator[SomTodayData])
@@ -497,7 +500,8 @@ SomTodayDataUpdateCoordinator(DataUpdateCoordinator[SomTodayData])
 |-----------|------------------|----------|
 | HTTP 400 `error=invalid_grant` (token exchange) | `SomtodayInvalidAuth` | config flow shows `invalid_auth`; runtime → `ConfigEntryAuthFailed` (reauth) |
 | `state` mismatch in pasted redirect | `ValueError("state_mismatch")` | config flow shows `state_mismatch` |
-| `401` / `403` from data API | `SomTodayAuthError` | refresh once; still failing → `ConfigEntryAuthFailed` |
+| `401` from data API (after the reactive refresh) | `SomtodayInvalidAuth` | `ConfigEntryAuthFailed` (reauth) |
+| `403` from data API | `SomTodayApiError` | `UpdateFailed` — permission denied is retryable, not a dead session |
 | Other token-exchange non-200 / malformed | `SomTodayConnectionError`/`SomTodayApiError` | retryable — flow shows `cannot_connect` and stays in step |
 | Network error / timeout | `SomTodayConnectionError` | `UpdateFailed` → retry next cycle |
 | `429 Too Many Requests` | `SomTodayRateLimitError` | `UpdateFailed`, honour `Retry-After` if present |
@@ -663,8 +667,9 @@ calendar distinguish homework from tests (see [§8](#8-entity-model)).
 
 ## 8. Entity model
 
-> **Future work.** Not implemented in this revision (authentication only).
-> Retained as forward reference.
+> **Partly implemented (v0.5.0).** The read-only `calendar` entity is
+> implemented; the `sensor` and `binary_sensor` tables below are later slices but
+> the device/identity rules already apply.
 
 One **device per config entry** (per student). All entities set
 `_attr_has_entity_name = True`, use translation keys, and share:
@@ -760,8 +765,8 @@ async_setup_entry(hass, entry):
     auth = SomTodayAuth(session)
     auth.tokens = SomTodayTokens.from_entry(entry)
     api = SomTodayApiClient(session, auth, entry.data[CONF_API_URL])
-    coordinator = SomTodayDataUpdateCoordinator(hass, entry, api, auth)   # future work
-    await coordinator.async_config_entry_first_refresh()                  # future work
+    coordinator = SomTodayDataUpdateCoordinator(hass, entry, api, auth)
+    await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = SomTodayRuntimeData(api=api, auth=auth, coordinator=coordinator)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -780,7 +785,7 @@ When the rotating refresh token changes, persist `auth.as_entry_data()`
 
 ```python
 DOMAIN = "sometoday"
-PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.CALENDAR]  # future work
+PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.CALENDAR]  # only CALENDAR for now
 
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_API_URL = "api_url"
@@ -830,15 +835,15 @@ custom_components/sometoday/
 ├── __init__.py          # Setup, runtime_data, entry unload, migrations
 ├── manifest.json        # Metadata + version
 ├── config_flow.py       # Config + options + reauth flow
-├── coordinator.py       # SomTodayDataUpdateCoordinator (future work)
+├── coordinator.py       # SomTodayDataUpdateCoordinator (schedule implemented)
 ├── api.py               # SomTodayApiClient (injectable session)
 ├── auth.py              # SomTodayAuth (browser authorization-code + PKCE)
 ├── exceptions.py        # Shared error hierarchy + SomtodayInvalidAuth (§5.1)
 ├── models.py            # Dataclasses + parsers
 ├── sensor.py            # Sensor entities (future work)
 ├── binary_sensor.py     # Binary sensor entities (future work)
-├── calendar.py          # Calendar entity (future work)
-├── entity.py            # Shared SomTodayEntity base (future work)
+├── calendar.py          # Calendar entity (implemented)
+├── entity.py            # Shared SomTodayEntity base (implemented)
 ├── const.py             # Constants (CONF_*, DEFAULT_*, client ID)
 ├── strings.json         # Translations (source of truth, EN)
 └── translations/
@@ -861,7 +866,7 @@ requirements_test.txt    # Test dependencies (pytest, HA plugin, aioresponses)
 {
   "domain": "sometoday",
   "name": "SomToday",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "config_flow": true,
   "iot_class": "cloud_polling",
   "integration_type": "hub",
@@ -914,11 +919,13 @@ session. `version` is mandatory for custom components.
   (`grant_type=authorization_code`, `code_verifier`, `client_id`) and the
   `invalid_grant` vs retryable distinction; `async_refresh_tokens()` tests
   assert rotation preservation when the response omits the refresh token.
-- Coordinator tests (future work) cover: successful update, `401` → refresh,
-  refresh failure → `ConfigEntryAuthFailed`, timeout/5xx → `UpdateFailed`, and
-  rotating-token persistence.
-- Entity tests (future work) cover state, attributes, device classes, unique
-  IDs and `unavailable` on `UpdateFailed`.
+- Coordinator tests (schedule slice implemented) cover: successful update,
+  per-student filtering, the fetch window, `SomtodayInvalidAuth` →
+  `ConfigEntryAuthFailed`, `SomTodayError` → `UpdateFailed`, rotated-token
+  persistence, and mixed naive/aware timestamp handling.
+- Calendar tests cover `event` (current/next), `async_get_events` from the cache
+  and out-of-range fetch, tz-aware event mapping, read-only, and entity
+  metadata. Sensor/binary_sensor tests are still future work.
 
 ## 14. Corrections to the previous draft
 

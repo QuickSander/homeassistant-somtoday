@@ -104,3 +104,13 @@ async def test_dutch_config_translations_load(hass: HomeAssistant) -> None:
     assert (
         translations[f"component.{DOMAIN}.config.abort.student_removed"] != ""
     )
+
+
+async def test_calendar_entity_translations_load(hass: HomeAssistant) -> None:
+    """The calendar entity name loads in both locales."""
+    english = await async_get_translations(hass, "en", "entity", [DOMAIN])
+    dutch = await async_get_translations(hass, "nl", "entity", [DOMAIN])
+
+    key = f"component.{DOMAIN}.entity.calendar.name"
+    assert english[key] == "Schedule"
+    assert dutch[key] == "Rooster"

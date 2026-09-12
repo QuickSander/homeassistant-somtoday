@@ -1,9 +1,9 @@
 """The SomToday integration.
 
-This slice wires up the authentication and API clients and exposes them through
-``entry.runtime_data``. The coordinator and entity platforms are added in later
-steps; until then setup only validates that the stored refresh token still
-works, so a broken session surfaces as a reauth prompt.
+This slice wires up the authentication and API clients, builds the
+``DataUpdateCoordinator`` and exposes the read-only schedule calendar. The
+coordinator is refreshed once during setup so a broken session surfaces as a
+reauth prompt (or a retry) before any entity is created.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from .api import SomTodayApiClient
 from .auth import SomTodayAuth
 from .config_flow import async_migrate_entry as async_migrate_entry
 from .const import CONF_ACCOUNT_ID, CONF_STUDENT_NAME
+from .coordinator import SomTodayDataUpdateCoordinator
 from .exceptions import (
     SomTodayError,
     SomtodayInvalidAuth,
@@ -29,10 +30,9 @@ from .models import SomTodayTokens
 
 _LOGGER = logging.getLogger(__name__)
 
-# Platforms are registered here once the entity modules exist. Keeping the list
-# empty lets the integration be installed and the authorization be tested
-# without any entities.
-PLATFORMS: list[Platform] = []
+# The schedule calendar is the first entity platform; the sensor and
+# binary_sensor platforms follow in later slices.
+PLATFORMS: list[Platform] = [Platform.CALENDAR]
 
 
 @dataclass
@@ -41,6 +41,7 @@ class SomTodayRuntimeData:
 
     auth: SomTodayAuth
     api: SomTodayApiClient
+    coordinator: SomTodayDataUpdateCoordinator
 
 
 SomTodayConfigEntry = ConfigEntry[SomTodayRuntimeData]
@@ -78,8 +79,8 @@ async def async_setup_entry(
     )
 
     # SomToday rotates refresh tokens. Persist the rotated token (and account
-    # metadata) so the next restart keeps working. The coordinator will own this
-    # once it exists.
+    # metadata) so the next restart keeps working; the coordinator keeps it up
+    # to date on later polls.
     if auth.tokens is not None:
         new_data = auth.as_entry_data()
         if any(entry.data.get(key) != value for key, value in new_data.items()):
@@ -90,10 +91,14 @@ async def async_setup_entry(
     api_url = auth.tokens.api_url if auth.tokens is not None else restored.api_url
     api = SomTodayApiClient(session, auth, api_url)
 
-    entry.runtime_data = SomTodayRuntimeData(auth=auth, api=api)
+    coordinator = SomTodayDataUpdateCoordinator(hass, entry, api, auth)
+    await coordinator.async_config_entry_first_refresh()
 
-    if PLATFORMS:
-        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.runtime_data = SomTodayRuntimeData(
+        auth=auth, api=api, coordinator=coordinator
+    )
+
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
 
@@ -102,6 +107,4 @@ async def async_unload_entry(
     hass: HomeAssistant, entry: SomTodayConfigEntry
 ) -> bool:
     """Unload a config entry."""
-    if PLATFORMS:
-        return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    return True
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

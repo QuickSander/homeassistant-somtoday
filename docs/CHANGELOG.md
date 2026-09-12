@@ -3,6 +3,57 @@
 All notable changes to the SomToday Home Assistant integration are documented
 in this file.
 
+## [0.5.0] - 2026-09-12
+
+### Added
+
+- **Schedule data slice (architecture §5, §6, §7.2, §7.2.1, §8.3).** The
+  integration now polls the SomToday schedule and exposes it as a read-only
+  calendar entity. Grades, homework and absence are still deferred.
+- `coordinator.py` (new): `SomTodayDataUpdateCoordinator` polls
+  `/rest/v1/afspraken` for the config entry's student, with
+  `SomTodayData(schedule, students, updated_at)`. The window is
+  `today - 1 day … today + schedule_days_ahead` (default 14) and the interval
+  comes from the `scan_interval` option (default 15 min). Lessons are filtered
+  per student (`not lesson.student_ids or student_id in lesson.student_ids`) and
+  sorted by start time; the student list is fetched best-effort. Errors map to
+  `ConfigEntryAuthFailed` (`SomtodayInvalidAuth`) or `UpdateFailed`
+  (`SomTodayError`, `aiohttp.ClientError`), and a rotated refresh token is
+  persisted through `hass.config_entries.async_update_entry`.
+- `calendar.py` (new): `SomTodayCalendar` is a read-only `CalendarEntity` bound
+  to the coordinator. `event` returns the lesson in progress or the next
+  upcoming lesson; `async_get_events` serves the requested range from the cached
+  schedule or fetches it directly from the API when out of range (without
+  writing to the coordinator). Event summaries are `"{subject} ({room})"`
+  (room omitted when absent), `location` is the room and `description` is the
+  teacher.
+- `entity.py` (new): shared `SomTodayEntity` base providing one device per
+  config entry (`DeviceInfo` identifiers `{(DOMAIN, entry.entry_id)}`, name
+  `SomToday {student_name}`, manufacturer `SomToday`) and
+  `_attr_has_entity_name`.
+- `api.py`: `async_get_appointments(start, end)` fetches
+  `/rest/v1/afspraken` with `begindatum`, `einddatum`, `sort=asc-id` and the
+  repeated `additional=vak`, `additional=docentAfkortingen`,
+  `additional=leerlingen`. The endpoint is paginated with
+  `Range: items=<start>-<start+99>`; pages are merged and the walk stops on a
+  short page, when `Content-Range` reports no more items, or at a hard page cap.
+  Both `200` and `206` are treated as success. `_send`/`_request_raw` now accept
+  extra headers and expose the response so headers can be read.
+- `models.py`: `Lesson` dataclass and `parse_lesson`/`parse_lessons` following
+  the §7.3 mapping, including `student_ids` from
+  `additionalObjects.leerlingen.items[].links[0].id`. Unparseable appointments
+  are skipped instead of raising.
+- `__init__.py`: builds the coordinator, runs
+  `async_config_entry_first_refresh()` and stores it in
+  `SomTodayRuntimeData`; `PLATFORMS = [Platform.CALENDAR]`.
+- `strings.json`/`translations`: added the `entity.calendar` name
+  ("Schedule"/"Rooster") with identical key sets.
+- Tests: appointment pagination, `Lesson` parsing, coordinator polling, window,
+  per-student filtering and error mapping, calendar `event`/`async_get_events`
+  and entity metadata, plus setup/unload. Total: 246 tests, 100% line coverage,
+  all SomToday HTTP mocked.
+- `manifest.json` bumped to `0.5.0`.
+
 ## [0.4.0] - 2026-09-12
 
 ### Changed

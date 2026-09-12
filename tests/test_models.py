@@ -16,9 +16,12 @@ from custom_components.sometoday.const import (
 )
 from custom_components.sometoday.models import (
     Account,
+    Lesson,
     SomTodayTokens,
     Student,
     parse_account,
+    parse_lesson,
+    parse_lessons,
     parse_students,
 )
 
@@ -364,3 +367,251 @@ def test_parse_students_invalid_payloads() -> None:
         parse_students({"items": "nope"})
     with pytest.raises(TypeError):
         parse_students({"items": [1]})
+
+
+# ---------------------------------------------------------------------------
+# Lesson / parse_lessons
+# ---------------------------------------------------------------------------
+LESSON_PAYLOAD: dict[str, Any] = {
+    "links": [{"id": 987, "rel": "self"}],
+    "vak": {"naam": "Wiskunde", "afkorting": "WI"},
+    "docentAfkortingen": ["JDO", "AB"],
+    "locatie": "B12",
+    "beginDatumTijd": "2026-09-12T08:30:00+02:00",
+    "eindDatumTijd": "2026-09-12T09:20:00+02:00",
+    "titel": "Wiskunde",
+    "afspraakType": {"naam": "LES"},
+    "additionalObjects": {
+        "leerlingen": {
+            "items": [
+                {"links": [{"id": 1234}]},
+                {"links": [{"id": 5678}]},
+            ]
+        }
+    },
+}
+
+
+def test_parse_lesson_documented_shape() -> None:
+    """Every documented field is mapped and student ids are extracted."""
+    lesson = parse_lesson(LESSON_PAYLOAD)
+
+    assert lesson is not None
+    assert lesson.id == "987"
+    assert lesson.subject == "Wiskunde"
+    assert lesson.subject_abbr == "WI"
+    assert lesson.teacher == "JDO, AB"
+    assert lesson.room == "B12"
+    assert lesson.start == datetime.fromisoformat("2026-09-12T08:30:00+02:00")
+    assert lesson.end == datetime.fromisoformat("2026-09-12T09:20:00+02:00")
+    assert lesson.title == "Wiskunde"
+    assert lesson.type == "LES"
+    assert lesson.student_ids == frozenset({1234, 5678})
+
+
+def test_parse_lesson_teacher_as_string() -> None:
+    """A single teacher abbreviation is tolerated as a string."""
+    lesson = parse_lesson({**LESSON_PAYLOAD, "docentAfkortingen": "JDO"})
+
+    assert lesson is not None
+    assert lesson.teacher == "JDO"
+
+
+def test_parse_lesson_missing_optional_fields() -> None:
+    """Missing optional fields become ``None`` and no students are assumed."""
+    lesson = parse_lesson(
+        {
+            "beginDatumTijd": "2026-09-12T08:30:00+00:00",
+            "eindDatumTijd": "2026-09-12T09:20:00+00:00",
+        }
+    )
+
+    assert lesson is not None
+    assert lesson.id is None
+    assert lesson.subject is None
+    assert lesson.subject_abbr is None
+    assert lesson.teacher is None
+    assert lesson.room is None
+    assert lesson.title is None
+    assert lesson.type is None
+    assert lesson.student_ids == frozenset()
+
+
+def test_parse_lesson_id_falls_back_to_top_level() -> None:
+    """Without a usable link, the top-level id is used."""
+    lesson = parse_lesson(
+        {
+            "id": 42,
+            "beginDatumTijd": "2026-09-12T08:30:00+00:00",
+            "eindDatumTijd": "2026-09-12T09:20:00+00:00",
+        }
+    )
+
+    assert lesson is not None
+    assert lesson.id == "42"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"beginDatumTijd": None},
+        {"beginDatumTijd": "not-a-date"},
+        {"eindDatumTijd": None},
+        {"eindDatumTijd": "not-a-date"},
+        {"beginDatumTijd": "2026-09-12T08:30:00+00:00", "eindDatumTijd": ""},
+    ],
+)
+def test_parse_lesson_unparseable_dates_skipped(overrides: dict[str, Any]) -> None:
+    """An appointment without a usable start/end is skipped, not raised."""
+    payload = {**LESSON_PAYLOAD, **overrides}
+
+    assert parse_lesson(payload) is None
+
+
+def test_parse_lesson_non_mapping_returns_none() -> None:
+    """A non-mapping entry is skipped."""
+    assert parse_lesson("nope") is None
+    assert parse_lesson(None) is None
+    assert parse_lesson(42) is None
+
+
+def test_parse_lesson_tolerates_odd_student_objects() -> None:
+    """Malformed student entries are ignored, valid ids are kept."""
+    payload = {
+        **LESSON_PAYLOAD,
+        "additionalObjects": {
+            "leerlingen": {
+                "items": [
+                    {"links": [{"id": 1234}]},
+                    {"links": [{"id": "bad"}]},
+                    {"links": []},
+                    "not-a-mapping",
+                ]
+            }
+        },
+    }
+
+    lesson = parse_lesson(payload)
+
+    assert lesson is not None
+    assert lesson.student_ids == frozenset({1234})
+
+
+def test_parse_lesson_malformed_additional_objects() -> None:
+    """A non-mapping ``additionalObjects`` leaves the student set empty."""
+    payload = {**LESSON_PAYLOAD, "additionalObjects": ["x"]}
+
+    lesson = parse_lesson(payload)
+
+    assert lesson is not None
+    assert lesson.student_ids == frozenset()
+
+
+def test_parse_lessons_items_shape() -> None:
+    """The documented ``{"items": [...]}`` payload is parsed."""
+    lessons = parse_lessons({"items": [LESSON_PAYLOAD]})
+
+    assert len(lessons) == 1
+    assert lessons[0].subject == "Wiskunde"
+
+
+def test_parse_lessons_plain_list_shape() -> None:
+    """A bare list of appointments is tolerated."""
+    assert [lesson.id for lesson in parse_lessons([LESSON_PAYLOAD])] == ["987"]
+
+
+def test_parse_lessons_skips_unparseable_entries() -> None:
+    """Unparseable entries are skipped while valid ones are kept."""
+    lessons = parse_lessons({"items": [LESSON_PAYLOAD, "nope", {"vak": {}}]})
+
+    assert len(lessons) == 1
+    assert lessons[0].id == "987"
+
+
+def test_parse_lessons_empty() -> None:
+    """Empty payloads yield no lessons."""
+    assert parse_lessons({"items": []}) == []
+    assert parse_lessons([]) == []
+
+
+def test_parse_lessons_invalid_payloads() -> None:
+    """A non-list top-level payload raises ``TypeError``."""
+    with pytest.raises(TypeError):
+        parse_lessons("nope")
+    with pytest.raises(TypeError):
+        parse_lessons(42)
+    with pytest.raises(TypeError):
+        parse_lessons({"items": "nope"})
+
+
+def test_lesson_is_frozen_and_slotted() -> None:
+    """The dataclass is immutable and carries the parsed values."""
+    lesson = parse_lesson(LESSON_PAYLOAD)
+    assert isinstance(lesson, Lesson)
+    with pytest.raises(AttributeError):
+        lesson.subject = "other"  # type: ignore[misc]
+
+
+def test_parse_lesson_teacher_scalar_value() -> None:
+    """A non-string, non-sequence teacher value is stringified."""
+    lesson = parse_lesson(
+        {
+            "docentAfkortingen": 123,
+            "beginDatumTijd": "2026-09-12T08:30:00+00:00",
+            "eindDatumTijd": "2026-09-12T09:20:00+00:00",
+        }
+    )
+
+    assert lesson is not None
+    assert lesson.teacher == "123"
+
+
+def test_parse_lesson_leerlingen_not_mapping() -> None:
+    """A non-mapping leerlingen object leaves the student set empty."""
+    payload = {**LESSON_PAYLOAD, "additionalObjects": {"leerlingen": "x"}}
+
+    lesson = parse_lesson(payload)
+
+    assert lesson is not None
+    assert lesson.student_ids == frozenset()
+
+
+def test_parse_lesson_leerlingen_items_not_sequence() -> None:
+    """A non-sequence leerlingen items value leaves the student set empty."""
+    payload = {
+        **LESSON_PAYLOAD,
+        "additionalObjects": {"leerlingen": {"items": "x"}},
+    }
+
+    lesson = parse_lesson(payload)
+
+    assert lesson is not None
+    assert lesson.student_ids == frozenset()
+
+
+def test_parse_lesson_z_suffix_timezone() -> None:
+    """An ISO-8601 ``Z`` suffix is parsed as UTC."""
+    lesson = parse_lesson(
+        {
+            "beginDatumTijd": "2026-09-12T08:30:00Z",
+            "eindDatumTijd": "2026-09-12T09:20:00Z",
+        }
+    )
+
+    assert lesson is not None
+    assert lesson.start == datetime(2026, 9, 12, 8, 30, tzinfo=UTC)
+    assert lesson.end == datetime(2026, 9, 12, 9, 20, tzinfo=UTC)
+
+
+def test_parse_lesson_offset_timezones_represent_same_instant() -> None:
+    """A ``+02:00`` start and a ``Z`` end can denote the same instant."""
+    lesson = parse_lesson(
+        {
+            "beginDatumTijd": "2026-09-12T10:30:00+02:00",
+            "eindDatumTijd": "2026-09-12T08:30:00Z",
+        }
+    )
+
+    assert lesson is not None
+    assert lesson.start == lesson.end
+    assert lesson.start.utcoffset() == timedelta(hours=2)

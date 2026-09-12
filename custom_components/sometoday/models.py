@@ -176,6 +176,147 @@ def parse_students(payload: Any) -> list[Student]:
     return students
 
 
+def _parse_datetime(value: Any) -> datetime | None:
+    """Parse an ISO-8601 datetime, returning ``None`` when unusable."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _as_text(value: Any) -> str | None:
+    """Return a display string from a scalar or a sequence of scalars.
+
+    SomToday returns ``docentAfkortingen`` either as a single string or as a
+    list of abbreviations depending on the appointment; both are tolerated.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value or None
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        parts = [_as_text(item) for item in value]
+        joined = ", ".join(part for part in parts if part)
+        return joined or None
+    return _as_str(value)
+
+
+def _extract_student_ids(payload: Mapping[str, Any]) -> frozenset[int]:
+    """Return the student ids referenced by an appointment.
+
+    The ids live in ``additionalObjects.leerlingen.items[].links[0].id`` and are
+    absent for the common single-student shape.
+    """
+    additional = payload.get("additionalObjects")
+    if not isinstance(additional, Mapping):
+        return frozenset()
+    leerlingen = additional.get("leerlingen")
+    if not isinstance(leerlingen, Mapping):
+        return frozenset()
+    items = leerlingen.get("items")
+    if not isinstance(items, Sequence) or isinstance(items, (str, bytes)):
+        return frozenset()
+
+    student_ids: set[int] = set()
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        try:
+            student_ids.add(_coerce_student_id(_first_link_id(item)))
+        except ValueError:
+            continue
+    return frozenset(student_ids)
+
+
+@dataclass(frozen=True, slots=True)
+class Lesson:
+    """A single appointment (lesson) from ``/rest/v1/afspraken``."""
+
+    id: str | None
+    subject: str | None
+    subject_abbr: str | None
+    teacher: str | None
+    room: str | None
+    start: datetime
+    end: datetime
+    title: str | None
+    type: str | None
+    student_ids: frozenset[int] = frozenset()
+
+    @classmethod
+    def from_api(cls, payload: Mapping[str, Any]) -> Lesson:
+        """Build a :class:`Lesson` from a single ``afspraken`` object.
+
+        Raises :class:`ValueError` when the appointment has no usable start or
+        end time, so :func:`parse_lesson` can skip it.
+        """
+        start = _parse_datetime(payload.get("beginDatumTijd"))
+        end = _parse_datetime(payload.get("eindDatumTijd"))
+        if start is None or end is None:
+            raise ValueError("Lesson is missing a usable start or end time")
+
+        subject: str | None = None
+        subject_abbr: str | None = None
+        vak = payload.get("vak")
+        if isinstance(vak, Mapping):
+            subject = _as_str(vak.get("naam"))
+            subject_abbr = _as_str(vak.get("afkorting"))
+
+        lesson_type: str | None = None
+        afspraak_type = payload.get("afspraakType")
+        if isinstance(afspraak_type, Mapping):
+            lesson_type = _as_str(afspraak_type.get("naam"))
+
+        return cls(
+            id=_as_str(_first_link_id(payload)),
+            subject=subject,
+            subject_abbr=subject_abbr,
+            teacher=_as_text(payload.get("docentAfkortingen")),
+            room=_as_str(payload.get("locatie")),
+            start=start,
+            end=end,
+            title=_as_str(payload.get("titel")),
+            type=lesson_type,
+            student_ids=_extract_student_ids(payload),
+        )
+
+
+def parse_lesson(payload: Any) -> Lesson | None:
+    """Parse a single appointment, returning ``None`` when unparseable."""
+    if not isinstance(payload, Mapping):
+        return None
+    try:
+        return Lesson.from_api(payload)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_lessons(payload: Any) -> list[Lesson]:
+    """Parse an ``afspraken`` payload into a list of lessons.
+
+    Both the documented ``{"items": [...]}`` shape and a plain list are
+    tolerated. Individual appointments that cannot be parsed are skipped.
+    """
+    if isinstance(payload, Mapping):
+        entries: Any = payload.get("items", [])
+    elif isinstance(payload, Sequence) and not isinstance(payload, (str, bytes)):
+        entries = payload
+    else:
+        raise TypeError("Unexpected lesson list payload")
+
+    if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
+        raise TypeError("Unexpected lesson list payload")
+
+    lessons: list[Lesson] = []
+    for entry in entries:
+        lesson = parse_lesson(entry)
+        if lesson is not None:
+            lessons.append(lesson)
+    return lessons
+
+
 @dataclass(slots=True)
 class SomTodayTokens:
     """OAuth2 tokens and derived metadata for a SomToday account."""

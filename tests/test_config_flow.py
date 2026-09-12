@@ -88,6 +88,38 @@ async def _noop_ensure_valid(self: SomTodayAuth) -> None:
 
 
 @contextmanager
+def _patched_appointments() -> Iterator[None]:
+    """Patch the schedule endpoint so the coordinator refresh is offline."""
+
+    async def _appointments(self: SomTodayApiClient, start: Any, end: Any) -> list[Any]:
+        return []
+
+    with patch.object(
+        SomTodayApiClient, "async_get_appointments", new=_appointments
+    ):
+        yield
+
+
+@contextmanager
+def _patched_data() -> Iterator[None]:
+    """Patch both coordinator endpoints so a setup never touches the network."""
+
+    async def _appointments(self: SomTodayApiClient, start: Any, end: Any) -> list[Any]:
+        return []
+
+    async def _students(self: SomTodayApiClient) -> list[Student]:
+        return []
+
+    with (
+        patch.object(
+            SomTodayApiClient, "async_get_appointments", new=_appointments
+        ),
+        patch.object(SomTodayApiClient, "async_get_students", new=_students),
+    ):
+        yield
+
+
+@contextmanager
 def _patched_login(
     *,
     exchange: Any = None,
@@ -133,6 +165,7 @@ def _patched_login(
         ),
         account_patch,
         students_patch,
+        _patched_appointments(),
         patch.object(SomTodayAuth, "async_ensure_valid", new=_noop_ensure_valid),
     ):
         yield
@@ -780,6 +813,7 @@ async def test_setup_entry_refreshes_token(hass: Any, caplog: Any) -> None:
         patch(
             "custom_components.sometoday.auth.async_refresh_tokens", new=_refresh
         ),
+        _patched_data(),
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -800,7 +834,7 @@ async def test_setup_entry_keeps_refresh_token_when_not_rotated(hass: Any) -> No
 
     with patch(
         "custom_components.sometoday.auth.async_refresh_tokens", new=_refresh
-    ):
+    ), _patched_data():
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
@@ -944,7 +978,10 @@ async def test_setup_entry_migrates_v1_entry(hass: Any) -> None:
     )
     entry.add_to_hass(hass)
 
-    with patch.object(SomTodayAuth, "async_ensure_valid", new=_noop_ensure_valid):
+    with (
+        patch.object(SomTodayAuth, "async_ensure_valid", new=_noop_ensure_valid),
+        _patched_data(),
+    ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 

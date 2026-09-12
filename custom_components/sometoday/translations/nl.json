@@ -65,5 +65,10 @@
         }
       }
     }
+  },
+  "entity": {
+    "calendar": {
+      "name": "Rooster"
+    }
   }
 }

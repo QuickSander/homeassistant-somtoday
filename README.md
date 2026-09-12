@@ -4,11 +4,11 @@ A Home Assistant custom component that logs in to [SomToday](https://www.somtoda
 and (eventually) exposes a student's schedule, homework, grades and absence as
 Home Assistant entities.
 
-> **Current status: authentication only (v0.4.0).**
-> This release installs and authenticates against SomToday so the login flow can
-> be tested from the Home Assistant UI. **No entities, sensors or coordinator are
-> added yet** — the integration currently validates the session during setup and
-> exposes no data. Entity support lands in a later release.
+> **Current status: authentication + schedule (v0.5.0).**
+> This release installs, authenticates against SomToday, and exposes the
+> student's **timetable as a read-only `calendar` entity** (per student). Grades,
+> homework, absence and the sensor/binary_sensor entities land in later releases.
+> There are no sensors yet.
 
 ## Requirements
 
@@ -89,8 +89,9 @@ After setup you can open **Configure** on the integration to change:
 | `enable_homework` | on | Fetch homework. |
 | `enable_absence` | on | Fetch absence. |
 
-> The options are stored now but only take effect once the coordinator and
-> entities are added in a later release.
+> The `scan_interval` and `schedule_days_ahead` options affect the coordinator
+> and the calendar immediately (the entry reloads when you save). The
+> homework/grades/absence toggles take effect once those entities are added.
 
 ## Testing the authorization
 
