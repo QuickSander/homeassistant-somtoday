@@ -73,3 +73,34 @@ async def test_english_config_translations_load(hass: HomeAssistant) -> None:
         "wrong_account",
     ):
         assert f"component.{DOMAIN}.config.error.{key}" in translations
+
+    assert (
+        translations[f"component.{DOMAIN}.config.step.student.data.student_select"]
+        == "Student"
+    )
+    assert (
+        translations[f"component.{DOMAIN}.config.abort.student_removed"]
+        != ""
+    )
+
+
+async def test_dutch_config_translations_load(hass: HomeAssistant) -> None:
+    """Home Assistant can load the Dutch student step and abort keys.
+
+    The structural parity test compares keys; this test additionally proves the
+    new ``student`` step and ``student_removed`` abort are actually loadable in
+    the non-source-of-truth locale.
+    """
+    translations = await async_get_translations(hass, "nl", "config", [DOMAIN])
+
+    assert (
+        translations[f"component.{DOMAIN}.config.step.student.data.student_select"]
+        == "Leerling"
+    )
+    assert (
+        translations[f"component.{DOMAIN}.config.step.student.title"]
+        == "Kies een leerling"
+    )
+    assert (
+        translations[f"component.{DOMAIN}.config.abort.student_removed"] != ""
+    )

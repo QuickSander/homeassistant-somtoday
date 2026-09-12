@@ -20,6 +20,16 @@
         "data_description": {
           "redirect_url": "Paste the full somtoday://… address, the Location header value, or just the authorization code."
         }
+      },
+      "student": {
+        "title": "Choose a student",
+        "description": "This SomToday account can see several students. Choose which student to add. Add the integration again to configure another student of the same account.",
+        "data": {
+          "student_select": "Student"
+        },
+        "data_description": {
+          "student_select": "One config entry is created per student."
+        }
       }
     },
     "error": {
@@ -34,9 +44,10 @@
       "unknown": "An unexpected error occurred."
     },
     "abort": {
-      "already_configured": "This account is already configured.",
+      "already_configured": "This student is already configured for this account.",
       "reauth_successful": "Re-authentication was successful.",
-      "wrong_account": "A different SomToday account signed in."
+      "wrong_account": "A different SomToday account signed in.",
+      "student_removed": "This student is no longer available for the account. The existing configuration was kept."
     }
   },
   "options": {

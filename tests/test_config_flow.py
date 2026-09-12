@@ -5,6 +5,7 @@ All SomToday HTTP calls are mocked; the real API is never contacted.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -15,7 +16,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -39,8 +40,10 @@ from custom_components.sometoday.const import (
     CONF_SCHEDULE_DAYS_AHEAD,
     CONF_STUDENT_ID,
     CONF_STUDENT_NAME,
+    CONF_STUDENT_SELECT,
     DEFAULT_API_URL,
     DOMAIN,
+    unique_id_for,
 )
 from custom_components.sometoday.exceptions import (
     SomTodayApiError,
@@ -54,6 +57,7 @@ REDIRECT_BASE = "somtoday://nl.topicus.somtoday.leerling/oauth/callback"
 
 ACCOUNT = Account(id="account-1", username="eli@example.com")
 STUDENT = Student(id=1234, leerlingnummer="450000", roepnaam="Eli", achternaam="Saado")
+STUDENT2 = Student(id=5678, leerlingnummer="450001", roepnaam="Sara", achternaam="Saado")
 
 
 @pytest.fixture(autouse=True)
@@ -79,16 +83,6 @@ async def _fake_exchange(
     return _tokens()
 
 
-async def _fake_account(self: SomTodayApiClient) -> Account:
-    """Fake the account response."""
-    return ACCOUNT
-
-
-async def _fake_students(self: SomTodayApiClient) -> list[Student]:
-    """Fake the student list response."""
-    return [STUDENT]
-
-
 async def _noop_ensure_valid(self: SomTodayAuth) -> None:
     """Skip token refresh during flow tests."""
 
@@ -97,6 +91,7 @@ async def _noop_ensure_valid(self: SomTodayAuth) -> None:
 def _patched_login(
     *,
     exchange: Any = None,
+    account: Account | None = None,
     account_error: Exception | None = None,
     students: list[Student] | None = None,
     students_error: Exception | None = None,
@@ -108,8 +103,13 @@ def _patched_login(
             SomTodayApiClient, "async_get_account", side_effect=account_error
         )
     else:
+        selected_account = account if account is not None else ACCOUNT
+
+        async def _account(self: SomTodayApiClient) -> Account:
+            return selected_account
+
         account_patch = patch.object(
-            SomTodayApiClient, "async_get_account", new=_fake_account
+            SomTodayApiClient, "async_get_account", new=_account
         )
 
     if students_error is not None:
@@ -156,11 +156,21 @@ def _redirect(code: str = "THECODE", state: str | None = None) -> str:
     return url
 
 
+def _student_options(result: dict[str, Any]) -> list[dict[str, str]]:
+    """Return the dropdown options of the student-selection step."""
+    schema = result["data_schema"]
+    for key, value in schema.schema.items():
+        if getattr(key, "schema", key) == CONF_STUDENT_SELECT:
+            return value.config["options"]
+    raise AssertionError("student_select field not found in the schema")
+
+
 def _make_entry(hass: Any, *, refresh_token: str = "old-refresh") -> MockConfigEntry:
     """Create and register an entry suitable for setup/reauth tests."""
     entry = MockConfigEntry(
         domain=DOMAIN,
-        unique_id="account-1",
+        version=2,
+        unique_id=unique_id_for("account-1", STUDENT.id),
         data={
             CONF_REFRESH_TOKEN: refresh_token,
             CONF_API_URL: API_URL,
@@ -202,7 +212,7 @@ async def test_user_flow_success(hass: Any) -> None:
     assert result["data"][CONF_STUDENT_NAME] == "Eli Saado"
 
     entries = hass.config_entries.async_entries(DOMAIN)
-    assert entries[0].unique_id == "account-1"
+    assert entries[0].unique_id == unique_id_for("account-1", STUDENT.id)
 
 
 async def test_user_flow_bare_code(hass: Any) -> None:
@@ -218,8 +228,12 @@ async def test_user_flow_bare_code(hass: Any) -> None:
     assert result["type"] is FlowResultType.CREATE_ENTRY
 
 
-async def test_user_flow_account_fallback_to_student_id(hass: Any) -> None:
-    """When /account/me fails, the student id becomes the unique id."""
+async def test_user_flow_account_lookup_failure_is_retryable(hass: Any) -> None:
+    """A failing /account/me is retryable and never creates an entry.
+
+    Regression for finding F1: the composite unique id must not fall back to a
+    student id, so the flow shows cannot_connect and can be retried.
+    """
     with _patched_login(account_error=SomTodayApiError("no account endpoint")):
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -229,15 +243,17 @@ async def test_user_flow_account_fallback_to_student_id(hass: Any) -> None:
             result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
         )
 
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["data"][CONF_ACCOUNT_ID] == str(STUDENT.id)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert result["errors"] == {"base": "cannot_connect"}
+    assert hass.config_entries.async_entries(DOMAIN) == []
 
 
 async def test_user_flow_duplicate_aborts(hass: Any) -> None:
-    """An account that is already configured aborts the flow."""
+    """The same (account, student) pair aborts the flow."""
     existing = MockConfigEntry(
         domain=DOMAIN,
-        unique_id="account-1",
+        unique_id=unique_id_for("account-1", STUDENT.id),
         data={CONF_REFRESH_TOKEN: "x", CONF_API_URL: API_URL},
     )
     existing.add_to_hass(hass)
@@ -256,8 +272,27 @@ async def test_user_flow_duplicate_aborts(hass: Any) -> None:
 
 
 async def test_user_flow_no_students(hass: Any) -> None:
-    """An empty student list shows no_students."""
+    """An empty student list shows no_students and regenerates the link."""
     with _patched_login(students=[]):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        first_url = _auth_url(result)
+        state = _state_from_url(first_url)
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
+        )
+        second_url = _auth_url(result)
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert result["errors"] == {"base": "no_students"}
+    assert first_url != second_url
+
+
+async def test_user_flow_multiple_students_shows_student_step(hass: Any) -> None:
+    """An account with several unconfigured students shows the student step."""
+    with _patched_login(students=[STUDENT, STUDENT2]):
         result = await hass.config_entries.flow.async_init(
             DOMAIN, context={"source": config_entries.SOURCE_USER}
         )
@@ -266,9 +301,118 @@ async def test_user_flow_no_students(hass: Any) -> None:
             result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
         )
 
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "user"
-    assert result["errors"] == {"base": "no_students"}
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "student"
+        options = _student_options(result)
+        assert [option["value"] for option in options] == [
+            str(STUDENT.id),
+            str(STUDENT2.id),
+        ]
+        assert [option["label"] for option in options] == [
+            STUDENT.display_name,
+            STUDENT2.display_name,
+        ]
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_STUDENT_SELECT: str(STUDENT2.id)}
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["title"] == f"SomToday {STUDENT2.display_name}"
+    assert result["data"][CONF_STUDENT_ID] == STUDENT2.id
+    assert result["data"][CONF_STUDENT_NAME] == STUDENT2.display_name
+    entries = hass.config_entries.async_entries(DOMAIN)
+    assert entries[0].unique_id == unique_id_for("account-1", STUDENT2.id)
+
+
+async def test_user_flow_student_step_unknown_selection_reshows_form(
+    hass: Any,
+) -> None:
+    """An unknown student selection never leaves the student step.
+
+    Home Assistant validates the dropdown value against the offered options
+    before the flow handler runs; the flow stays on the student step so the
+    user can pick again.
+    """
+    with _patched_login(students=[STUDENT, STUDENT2]):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        state = _state_from_url(_auth_url(result))
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
+        )
+        assert result["step_id"] == "student"
+
+        with pytest.raises(InvalidData):
+            await hass.config_entries.flow.async_configure(
+                result["flow_id"], {CONF_STUDENT_SELECT: "999999"}
+            )
+
+        flow = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+        assert flow[0]["step_id"] == "student"
+
+
+async def test_user_flow_student_step_aborts_when_all_configured(
+    hass: Any,
+) -> None:
+    """If every student got configured meanwhile, the student step aborts."""
+    with _patched_login(students=[STUDENT, STUDENT2]):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        state = _state_from_url(_auth_url(result))
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
+        )
+        assert result["step_id"] == "student"
+
+        # Another flow configures both students while the dropdown is open.
+        for student in (STUDENT, STUDENT2):
+            MockConfigEntry(
+                domain=DOMAIN,
+                unique_id=unique_id_for("account-1", student.id),
+                data={},
+            ).add_to_hass(hass)
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_STUDENT_SELECT: str(STUDENT.id)}
+        )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+
+
+async def test_user_flow_second_student_same_account(hass: Any) -> None:
+    """A second student of an already-configured account is added.
+
+    The account is shared but the composite unique id differs, so the entry is
+    created without showing the student step (exactly one student remains
+    unconfigured).
+    """
+    existing = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=unique_id_for("account-1", STUDENT.id),
+        data={CONF_REFRESH_TOKEN: "x", CONF_API_URL: API_URL},
+    )
+    existing.add_to_hass(hass)
+
+    with _patched_login(students=[STUDENT, STUDENT2]):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        state = _state_from_url(_auth_url(result))
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_STUDENT_ID] == STUDENT2.id
+    entries = hass.config_entries.async_entries(DOMAIN)
+    assert {entry.unique_id for entry in entries} == {
+        unique_id_for("account-1", STUDENT.id),
+        unique_id_for("account-1", STUDENT2.id),
+    }
 
 
 @pytest.mark.parametrize(
@@ -435,15 +579,18 @@ async def test_reauth_flow_updates_refresh_token(hass: Any) -> None:
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reauth_successful"
     assert entry.data[CONF_REFRESH_TOKEN] == "rotated"
+    # The student binding is preserved: reauth only updates the tokens.
+    assert entry.data[CONF_ACCOUNT_ID] == "account-1"
+    assert entry.data[CONF_STUDENT_ID] == STUDENT.id
+    assert entry.data[CONF_STUDENT_NAME] == STUDENT.display_name
     assert entry.state is ConfigEntryState.LOADED
 
 
 async def test_reauth_flow_wrong_account(hass: Any) -> None:
     """A different account signing in aborts with wrong_account."""
     entry = _make_entry(hass)
-    hass.config_entries.async_update_entry(entry, unique_id="some-other-account")
 
-    with _patched_login():
+    with _patched_login(account=Account(id="some-other-account")):
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={
@@ -459,6 +606,28 @@ async def test_reauth_flow_wrong_account(hass: Any) -> None:
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "wrong_account"
+
+
+async def test_reauth_flow_student_removed(hass: Any) -> None:
+    """A stored student missing from the account aborts with student_removed."""
+    entry = _make_entry(hass)
+
+    with _patched_login(students=[STUDENT2]):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_REAUTH,
+                "entry_id": entry.entry_id,
+            },
+            data=entry.data,
+        )
+        state = _state_from_url(_auth_url(result))
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
+        )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "student_removed"
 
 
 @pytest.mark.parametrize(
@@ -675,12 +844,68 @@ async def test_setup_entry_unexpected_failure(hass: Any) -> None:
         await async_setup_entry(hass, entry)
 
 
-async def test_async_migrate_entry(hass: Any) -> None:
-    """The migration hook accepts the current schema."""
-    entry = MockConfigEntry(domain=DOMAIN, data={})
+async def test_async_migrate_entry_v1_to_composite(hass: Any) -> None:
+    """A v1 entry gets the composite unique id and the current version."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=1,
+        unique_id="account-1",
+        data={
+            CONF_REFRESH_TOKEN: "x",
+            CONF_API_URL: API_URL,
+            CONF_ACCOUNT_ID: "account-1",
+            CONF_STUDENT_ID: STUDENT.id,
+        },
+    )
     entry.add_to_hass(hass)
 
     assert await async_migrate_entry(hass, entry) is True
+    assert entry.unique_id == unique_id_for("account-1", STUDENT.id)
+    assert entry.version == 2
+
+
+async def test_async_migrate_entry_without_student_falls_back(
+    hass: Any,
+) -> None:
+    """A v1 entry without a student id keeps the account id as unique id."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=1,
+        unique_id="account-1",
+        data={CONF_ACCOUNT_ID: "account-1"},
+    )
+    entry.add_to_hass(hass)
+
+    assert await async_migrate_entry(hass, entry) is True
+    assert entry.unique_id == "account-1"
+    assert entry.version == 2
+
+
+async def test_async_migrate_entry_without_account_keeps_unique_id(
+    hass: Any,
+) -> None:
+    """A v1 entry without account metadata keeps its unique id and is bumped."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=1,
+        unique_id="legacy",
+        data={},
+    )
+    entry.add_to_hass(hass)
+
+    assert await async_migrate_entry(hass, entry) is True
+    assert entry.unique_id == "legacy"
+    assert entry.version == 2
+
+
+async def test_async_migrate_entry_current_version_is_noop(hass: Any) -> None:
+    """A v2 entry is left untouched."""
+    entry = _make_entry(hass)
+    original_unique_id = entry.unique_id
+
+    assert await async_migrate_entry(hass, entry) is True
+    assert entry.unique_id == original_unique_id
+    assert entry.version == 2
 
 
 async def test_async_unload_entry(hass: Any) -> None:
@@ -693,3 +918,231 @@ async def test_async_unload_entry(hass: Any) -> None:
 def test_default_api_url_constant() -> None:
     """The default API URL is the documented SomToday host."""
     assert DEFAULT_API_URL == "https://api.somtoday.nl"
+
+
+# ---------------------------------------------------------------------------
+# Identity model (Model A): one config entry per (account, student)
+# ---------------------------------------------------------------------------
+async def test_setup_entry_migrates_v1_entry(hass: Any) -> None:
+    """HA migrates a v1 entry during setup and persists the new version.
+
+    Exercises the re-export of ``async_migrate_entry`` from ``__init__.py`` and
+    the Home Assistant migration hook (``ConfigEntry.async_migrate``), which the
+    direct ``async_migrate_entry`` tests do not cover.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=1,
+        unique_id="account-1",
+        data={
+            CONF_REFRESH_TOKEN: "x",
+            CONF_API_URL: API_URL,
+            CONF_ACCOUNT_ID: "account-1",
+            CONF_STUDENT_ID: STUDENT.id,
+            CONF_STUDENT_NAME: STUDENT.display_name,
+        },
+    )
+    entry.add_to_hass(hass)
+
+    with patch.object(SomTodayAuth, "async_ensure_valid", new=_noop_ensure_valid):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.unique_id == unique_id_for("account-1", STUDENT.id)
+    assert entry.version == 2
+
+
+async def test_reauth_preserves_composite_unique_id(hass: Any) -> None:
+    """Reauth updates tokens without changing the composite unique id."""
+    entry = _make_entry(hass)
+    original_unique_id = entry.unique_id
+
+    async def _rotating(session: Any, code: str, code_verifier: str) -> Any:
+        return _tokens("rotated")
+
+    with _patched_login(exchange=_rotating):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_REAUTH,
+                "entry_id": entry.entry_id,
+            },
+            data=entry.data,
+        )
+        state = _state_from_url(_auth_url(result))
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
+        )
+        await hass.async_block_till_done()
+
+    assert result["reason"] == "reauth_successful"
+    assert entry.unique_id == original_unique_id
+    assert entry.unique_id == unique_id_for("account-1", STUDENT.id)
+
+
+async def test_concurrent_flows_same_student_create_one_entry(hass: Any) -> None:
+    """Two concurrent flows for the same (account, student) create one entry.
+
+    Probes two framework behaviours the identity model relies on:
+    ``_async_current_ids()`` only sees configured entries (not other in-progress
+    flows) and ``_async_finish`` sets the unique id with
+    ``raise_on_progress=False``. Even with an interleaving exchange, the
+    ``_abort_if_unique_id_configured`` check keeps the second flow from
+    creating a duplicate entry.
+    """
+
+    async def _yielding_exchange(session: Any, code: str, code_verifier: str) -> Any:
+        await asyncio.sleep(0)
+        return _tokens()
+
+    with _patched_login(exchange=_yielding_exchange):
+        first = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        second = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        first_state = _state_from_url(_auth_url(first))
+        second_state = _state_from_url(_auth_url(second))
+        results = await asyncio.gather(
+            hass.config_entries.flow.async_configure(
+                first["flow_id"], {CONF_REDIRECT_URL: _redirect(state=first_state)}
+            ),
+            hass.config_entries.flow.async_configure(
+                second["flow_id"], {CONF_REDIRECT_URL: _redirect(state=second_state)}
+            ),
+        )
+
+    entries = hass.config_entries.async_entries(DOMAIN)
+    assert len(entries) == 1
+    assert entries[0].unique_id == unique_id_for("account-1", STUDENT.id)
+
+    created = [r for r in results if r["type"] is FlowResultType.CREATE_ENTRY]
+    aborted = [r for r in results if r["type"] is FlowResultType.ABORT]
+    assert len(created) == 1
+    assert len(aborted) == 1
+    assert aborted[0]["reason"] == "already_configured"
+
+
+async def test_reauth_transient_account_failure_is_retryable(hass: Any) -> None:
+    """A transient ``/account/me`` failure during reauth is retryable.
+
+    Regression for finding F1: previously the student-id fallback made this
+    abort with ``wrong_account``, which a retry could not recover from.
+    """
+    entry = _make_entry(hass)
+
+    with _patched_login(
+        account_error=SomTodayApiError("transient account failure"),
+        students=[STUDENT],
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_REAUTH,
+                "entry_id": entry.entry_id,
+            },
+            data=entry.data,
+        )
+        state = _state_from_url(_auth_url(result))
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reauth_confirm"
+    assert result["errors"] == {"base": "cannot_connect"}
+
+
+async def test_user_flow_account_failure_cannot_duplicate_student(hass: Any) -> None:
+    """A transient ``/account/me`` failure does not add a duplicate student.
+
+    Regression for finding F1b: the flow now fails retryably instead of
+    computing a student-based unique id.
+    """
+    existing = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=unique_id_for("account-1", STUDENT.id),
+        data={CONF_REFRESH_TOKEN: "x", CONF_API_URL: API_URL},
+    )
+    existing.add_to_hass(hass)
+
+    with _patched_login(
+        account_error=SomTodayApiError("transient account failure"),
+        students=[STUDENT],
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        state = _state_from_url(_auth_url(result))
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "cannot_connect"}
+    entries = hass.config_entries.async_entries(DOMAIN)
+    assert [entry.unique_id for entry in entries] == [
+        unique_id_for("account-1", STUDENT.id)
+    ]
+
+
+async def test_user_flow_student_step_reshows_remaining_after_config_change(
+    hass: Any,
+) -> None:
+    """Selecting a student configured meanwhile re-shows the remaining options.
+
+    Covers the handler's fall-through branch (``config_flow.py:221->226``): the
+    dropdown value was valid when the form was rendered, but by submit time that
+    student is configured while another remains unconfigured.
+    """
+    with _patched_login(students=[STUDENT, STUDENT2]):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        state = _state_from_url(_auth_url(result))
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
+        )
+        assert result["step_id"] == "student"
+
+        # Another flow configures only the first student while the dropdown is
+        # open; the second remains unconfigured.
+        MockConfigEntry(
+            domain=DOMAIN,
+            unique_id=unique_id_for("account-1", STUDENT.id),
+            data={},
+        ).add_to_hass(hass)
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_STUDENT_SELECT: str(STUDENT.id)}
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "student"
+    assert [option["value"] for option in _student_options(result)] == [
+        str(STUDENT2.id)
+    ]
+
+
+async def test_user_flow_account_lookup_failure_with_empty_list_is_retryable(
+    hass: Any,
+) -> None:
+    """An account lookup failure is retryable even with an empty student list.
+
+    Regression for finding F1: ``/account/me`` is required, so its failure is a
+    ``cannot_connect`` (retryable) error rather than ``no_students``.
+    """
+    with _patched_login(account_error=SomTodayApiError("down"), students=[]):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        state = _state_from_url(_auth_url(result))
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_REDIRECT_URL: _redirect(state=state)}
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert result["errors"] == {"base": "cannot_connect"}

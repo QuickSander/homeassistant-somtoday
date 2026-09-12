@@ -1,7 +1,7 @@
 # Architecture: SomToday Home Assistant Integration
 
 > Technical design for the SomToday custom component.
-> Author: architect-agent (per `AGENTS.md`). Status: **Proposed v2 — authentication revision**.
+> Author: architect-agent (per `AGENTS.md`). Status: **Proposed v3 — multi-student identity revision**.
 > Source of truth for the API: <https://github.com/elisaado/somtoday-api-docs>.
 > The browser authorization-code + PKCE flow follows the MIT-licensed
 > `jonisnet/ha-somtoday` integration.
@@ -68,6 +68,40 @@ Consequences for the design:
 - **No password grant, no server-side form scraping.** The password grant is
   disabled and form scraping breaks at SSO/MFA schools. Authentication is
   browser-based (see [§3](#3-authentication--oauth2-flow)).
+
+### 1.1 Identity model — multiple students, schools and instances (v3)
+
+The integration supports **multiple configured instances in Home Assistant**.
+Two situations must work:
+
+| # | Situation | How it is handled |
+|---|-----------|-------------------|
+| A | Each student has **their own SomToday account** (accounts may be at *different schools*) | Add the integration **once per account**: `integration_type: "hub"` + `config_flow: true` let the flow run repeatedly, producing one config entry per account. |
+| B | One **parent/guardian account** can see **several students** (possibly at different schools) | Run the flow **once per student**. Requires a student-selection step and a composite unique id (this revision). |
+
+**Model A (chosen): one config entry = one student = one device.** Identity is
+the composite `(account_id, student_id)`:
+
+```text
+unique_id = f"{account_id}:{student_id}"
+```
+
+- `account_id` = `links[0].id` from `GET /rest/v1/account/me`. This endpoint is
+  **required**: if it fails the flow reports a retryable `cannot_connect` rather
+  than falling back to a student id, because a student-based fallback would be
+  unstable (duplicate entries for the same student, or a false `wrong_account`
+  during reauth).
+- `student_id` = `links[0].id` of the chosen student.
+
+This makes two entries distinct iff they differ in account **or** student, so a
+parent account can be added once per child while the *same* student still cannot
+be added twice.
+
+> A single SomToday account can thus legitimately back several entries. Because
+> SomToday rotates refresh tokens, each entry performs its own browser login and
+> keeps its own (independently rotated) refresh token. The simpler alternative —
+> one entry per account with one device per student — was considered and
+> deferred (see [§12.6](#12-limitations--open-questions)).
 
 ## 2. Overview and design goals
 
@@ -358,18 +392,33 @@ restarting the flow.
 
 ### 4.1 Steps
 
-| Step | Purpose | Input | Errors |
-|------|---------|-------|--------|
-| `async_step_user` | Show authorize URL + collect pasted redirect/code | multi-line `TextSelector` for the pasted URL/code | `invalid_auth`, `cannot_connect` |
-| `async_step_reauth` → `async_step_reauth_confirm` | Re-auth after `ConfigEntryAuthFailed` | pasted redirect/code | `invalid_auth`, `cannot_connect` |
+| Step | Purpose | Input | Errors / aborts |
+|------|---------|-------|-----------------|
+| `async_step_user` | Show authorize URL; collect pasted redirect/code; exchange + identify | multi-line `TextSelector` for the pasted URL/code | `invalid_auth`, `cannot_connect`, `no_students` |
+| `async_step_student` | Choose a student when the account exposes >1 unconfigured student | `SelectSelector` over unconfigured students | — (auto-select when ≤1) |
+| `async_step_reauth` → `async_step_reauth_confirm` | Re-auth after `ConfigEntryAuthFailed` | pasted redirect/code | `invalid_auth`, `cannot_connect`, `wrong_account`, `student_removed` |
 | `async_step_init` (options) | Change poll interval / feature toggles | number + booleans | — |
 
 Details:
 
-- **Single step.** There is no school selection and no credential form. The
-  flow builds the authorize URL (with a fresh PKCE pair + `state` stored on the
-  flow), presents it to the user, and asks them to paste back the redirect URL
-  or code.
+- **Login step + student step.** There is no school selection and no credential
+  form. The flow builds the authorize URL (with a fresh PKCE pair + `state`), the
+  user logs in in their browser and pastes back the redirect/code. After a
+  successful exchange the flow fetches `/rest/v1/account/me` and
+  `/rest/v1/leerlingen`, computes the **unconfigured** students (composite unique
+  id not already in `self._async_current_ids()`), and decides:
+
+  | all students | unconfigured | Action |
+  |--------------|--------------|--------|
+  | 0 | — | error `no_students` (mint a fresh PKCE pair, stay in `user`) |
+  | ≥1 | 0 | abort `already_configured` |
+  | ≥1 | 1 | auto-select and create the entry (no extra step) |
+  | ≥1 | >1 | show `async_step_student` |
+
+- **Composite unique id.** Before the abort/create, call
+  `async_set_unique_id(f"{account_id}:{student_id}", raise_on_progress=False)`
+  and `_abort_if_unique_id_configured()`. See
+  [§1.1](#11-identity-model--multiple-students-schools-and-instances-v3).
 - **Chrome / custom-scheme guidance.** Chrome discards custom-scheme redirects,
   so after a successful login the address bar may be empty or show an error.
   The UI instructs the user to either copy the address bar *before* Chrome
@@ -377,13 +426,16 @@ Details:
   request to the callback, and copy the `Location:` header value
   (`somtoday://nl.topicus.somtoday.leerling/oauth/callback?code=…`). A bare
   `code` is also accepted.
-- **Duplicate detection:** after a successful exchange, call
-  `GET /rest/v1/account/me` to obtain the account id; fall back to the student
-  id from `GET /rest/v1/leerlingen`. Use it as the unique id and
-  `_abort_if_unique_id_configured()` → `already_configured`.
-- **Reauth:** `entry.data` holds only the refresh token (plus API URL/account
-  metadata); re-running the browser-paste flow updates the tokens in place. No
-  username is stored to prefill.
+- **Reauth:** `entry.data` holds the refresh token plus account metadata.
+  Re-running the browser-paste flow verifies the **account** identity: a
+  different `account_id` aborts `wrong_account`; if the stored `student_id` is
+  no longer in `/rest/v1/leerlingen`, abort `student_removed` (never silently
+  re-point the student binding). Otherwise update tokens in place with
+  `async_update_reload_and_abort`.
+- **Migration (`VERSION = 2`).** v1 used `account_id` as the unique id; v2 uses
+  the composite. `async_migrate_entry` recomputes
+  `f"{account_id}:{student_id}"` for `version == 1` entries and applies it with
+  `async_update_entry(entry, unique_id=…)`. No data keys change.
 - **Options:** validated with
   `vol.All(vol.Coerce(int), vol.Range(min=MIN_SCAN_INTERVAL, max=MAX_SCAN_INTERVAL))`
   and applied by reloading the entry with
@@ -404,23 +456,28 @@ authorize-URL step and the paste/DevTools instructions are localised here.
 ```text
 SomTodayDataUpdateCoordinator(DataUpdateCoordinator[SomTodayData])
   update_interval = timedelta(minutes=scan_interval)   # default 15
+  # self._student_id = entry.data[CONF_STUDENT_ID]  # fixed at setup, no students[0]
   _async_update_data():
       async with self._lock:
           await self._auth.async_ensure_valid()
-          if self._student_id is None:
-              students = await self._api.async_get_students()
-              self._student_id = students[0].id
+          students = await self._api.async_get_students()
           data = SomTodayData(
               students = students,
-              schedule = await self._api.async_get_schedule(today-1, today+N),
+              schedule = await self._api.async_get_schedule(today-1, today+N),  # filter per student
               grades   = await self._api.async_get_grades(self._student_id) if enabled,
-              homework = await self._api.async_get_homework(today-1)        if enabled,
+              homework = await self._api.async_get_homework(today-1, self._student_id) if enabled,
               absence  = await self._api.async_get_absence(week_start, today) if enabled,
               subjects = await self._api.async_get_subjects(),
               updated_at = utcnow(),
           )
           return data
 ```
+
+- **Student binding:** `self._student_id` is read from
+  `entry.data[CONF_STUDENT_ID]` at construction. There is no `students[0]`
+  fallback; the selected student is fixed at setup time.
+- **Per-entry state:** one coordinator (and one `_last_grade_ids` set for
+  `new_grade`) per config entry; entries never share coordinator state.
 
 - **Default interval:** 15 minutes (`DEFAULT_SCAN_INTERVAL`), minimum 5, maximum
   1440, configurable via options.
@@ -530,6 +587,26 @@ the `swiToekenningId` when the `swigemaakt` row does not exist yet.
 
 v1 fetches homework from **appointment + day + week** endpoints and merges them
 (deduplicated by `links[0].id`) so no homework type is missed.
+
+#### 7.2.1 Per-student scoping (multi-student accounts)
+
+With one account that sees several students (Model A: separate entries, one per
+student), each entry must read **only its own student's** data:
+
+- **Schedule** (`/rest/v1/afspraken`): request
+  `additional=leerlingen`; each appointment then carries the involved students
+  in `additionalObjects.leerlingen.items`. Keep an appointment when it has no
+  student list (the normal single-student shape) or when the entry's
+  `student_id` is among them:
+  `not lesson.student_ids or student_id in lesson.student_ids`.
+- **Homework** (`studiewijzeritem*toekenningen`): pass the repeated query
+  parameter **`geenDifferentiatieOfGedifferentieerdVoorLeerling=<student_id>`**
+  so SomToday filters server-side (the reference integration does this).
+- **Grades**: already per student via
+  `/rest/v1/resultaten/huidigVoorLeerling/{student_id}`.
+- **Absence** (`/absentiemeldingen`): not verified to be student-scoped; filter
+  client-side on the `leerling` reference until confirmed (scheduled with the
+  coordinator work).
 
 ### 7.3 JSON → dataclass field reference
 
@@ -710,12 +787,18 @@ CONF_API_URL = "api_url"
 CONF_ACCOUNT_ID = "account_id"
 CONF_STUDENT_ID = "student_id"
 CONF_STUDENT_NAME = "student_name"
+CONF_REDIRECT_URL = "redirect_url"        # transient flow field, never persisted
+CONF_STUDENT_SELECT = "student_select"    # transient flow field, never persisted
 CONF_SCAN_INTERVAL = "scan_interval"
 CONF_SCHEDULE_DAYS_AHEAD = "schedule_days_ahead"
 CONF_HOMEWORK_DAYS_AHEAD = "homework_days_ahead"
 CONF_ENABLE_GRADES = "enable_grades"
 CONF_ENABLE_HOMEWORK = "enable_homework"
 CONF_ENABLE_ABSENCE = "enable_absence"
+
+# One config entry per (account, student); shared by the flow and the migration.
+def unique_id_for(account_id: str, student_id: int) -> str:
+    return f"{account_id}:{student_id}"
 
 DEFAULT_SCAN_INTERVAL = 15          # minutes
 MIN_SCAN_INTERVAL = 5
@@ -778,7 +861,7 @@ requirements_test.txt    # Test dependencies (pytest, HA plugin, aioresponses)
 {
   "domain": "sometoday",
   "name": "SomToday",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "config_flow": true,
   "iot_class": "cloud_polling",
   "integration_type": "hub",
@@ -804,10 +887,16 @@ session. `version` is mandatory for custom components.
    them; when it does not, the existing token is preserved (no-op write-back).
 3. **Rate limits** are undocumented; the 5-minute minimum is a conservative
    guess.
-4. **Multiple students** per account: the account id (from `/rest/v1/account/me`)
-   is the unique id; student selection/multi-student support is a future
-   enhancement.
+4. **Multiple students** per account are supported (Model A): one entry per
+   `(account, student)` with a composite unique id ([§1.1](#11-identity-model--multiple-students-schools-and-instances-v3)).
+   **Open:** confirm the per-student scoping of `/absentiemeldingen` (and of the
+   schedule when `additional=leerlingen` is unavailable); filter client-side
+   until verified ([§7.2.1](#721-per-student-scoping-multi-student-accounts)).
 5. **Write support** (`PUT /rest/v1/swigemaakt/{id}`) is out of scope for v1.
+6. **One entry per account (device per student) alternative.** Considered and
+   deferred: it avoids repeated browser logins for a parent account and fetches
+   the schedule once, but requires a coordinator whose data is a per-student
+   mapping and one device per student. Not needed while accounts are separate.
 
 ## 13. Testing hooks (for the tester-agent)
 
@@ -852,3 +941,15 @@ grant disabled). This revision replaces it with the browser authorization-code
 | `sensor.py` only | `sensor` + `binary_sensor` + `calendar` (future work) |
 | `hass.data[DOMAIN]` implied | `entry.runtime_data` |
 | No pagination | `Range: items=0-99` for grades |
+
+### v2 → v3 (identity model)
+
+| v2 | v3 |
+|----|----|
+| `unique_id = account_id` (one entry per account) | `unique_id = f"{account_id}:{student_id}"` (one entry per student) |
+| `student = students[0]` | `async_step_student` (`SelectSelector`) when >1 unconfigured; auto-select for 1 |
+| No student step | `async_step_student` + `CONF_STUDENT_SELECT` |
+| Reauth compared `account_id` to the unique id | reauth compares `account_id` to `entry.data[account_id]`, plus `student_removed` |
+| `VERSION = 1` | `VERSION = 2` + `async_migrate_entry` unique-id recompute |
+| Coordinator resolved `students[0]` at runtime | coordinator reads `entry.data[CONF_STUDENT_ID]` |
+| Multi-student "future enhancement" | multi-student is the design focus; endpoint scoping is the open item |

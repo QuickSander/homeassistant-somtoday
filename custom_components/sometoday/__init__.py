@@ -19,6 +19,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import SomTodayApiClient
 from .auth import SomTodayAuth
+from .config_flow import async_migrate_entry as async_migrate_entry
 from .const import CONF_ACCOUNT_ID, CONF_STUDENT_NAME
 from .exceptions import (
     SomTodayError,
@@ -103,11 +104,4 @@ async def async_unload_entry(
     """Unload a config entry."""
     if PLATFORMS:
         return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    return True
-
-
-async def async_migrate_entry(
-    hass: HomeAssistant, entry: ConfigEntry
-) -> bool:
-    """Migrate an old config entry to the current schema."""
     return True

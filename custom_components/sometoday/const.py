@@ -24,6 +24,10 @@ CONF_STUDENT_NAME: Final = "student_name"
 # persisted in the config entry.
 CONF_REDIRECT_URL: Final = "redirect_url"
 
+# Transient config-flow field holding the selected student id when an account
+# exposes several students. Never persisted in the config entry.
+CONF_STUDENT_SELECT: Final = "student_select"
+
 # Config entry option keys
 CONF_SCAN_INTERVAL: Final = "scan_interval"
 CONF_SCHEDULE_DAYS_AHEAD: Final = "schedule_days_ahead"
@@ -31,6 +35,18 @@ CONF_HOMEWORK_DAYS_AHEAD: Final = "homework_days_ahead"
 CONF_ENABLE_GRADES: Final = "enable_grades"
 CONF_ENABLE_HOMEWORK: Final = "enable_homework"
 CONF_ENABLE_ABSENCE: Final = "enable_absence"
+
+
+def unique_id_for(account_id: str, student_id: int) -> str:
+    """Return the composite identity of one ``(account, student)`` pair.
+
+    One config entry exists per student, so a parent account may back several
+    entries while the same student can still only be added once. The helper is
+    deliberately free of Home Assistant imports so it can be unit tested in
+    isolation.
+    """
+    return f"{account_id}:{student_id}"
+
 
 # ---------------------------------------------------------------------------
 # Defaults

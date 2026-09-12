@@ -20,6 +20,16 @@
         "data_description": {
           "redirect_url": "Plak het volledige somtoday://…-adres, de Location-header of alleen de autorisatiecode."
         }
+      },
+      "student": {
+        "title": "Kies een leerling",
+        "description": "Dit SomToday-account ziet meerdere leerlingen. Kies welke leerling je wilt toevoegen. Voeg de integratie opnieuw toe om nog een leerling van hetzelfde account te configureren.",
+        "data": {
+          "student_select": "Leerling"
+        },
+        "data_description": {
+          "student_select": "Er wordt één configuratie-item per leerling aangemaakt."
+        }
       }
     },
     "error": {
@@ -34,9 +44,10 @@
       "unknown": "Er is een onverwachte fout opgetreden."
     },
     "abort": {
-      "already_configured": "Dit account is al geconfigureerd.",
+      "already_configured": "Deze leerling is al geconfigureerd voor dit account.",
       "reauth_successful": "Opnieuw inloggen is gelukt.",
-      "wrong_account": "Er is ingelogd met een ander SomToday-account."
+      "wrong_account": "Er is ingelogd met een ander SomToday-account.",
+      "student_removed": "Deze leerling is niet meer beschikbaar voor het account. De bestaande configuratie is behouden."
     }
   },
   "options": {

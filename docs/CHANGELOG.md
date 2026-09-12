@@ -3,6 +3,64 @@
 All notable changes to the SomToday Home Assistant integration are documented
 in this file.
 
+## [0.4.0] - 2026-09-12
+
+### Changed
+
+- **Identity model is now one config entry per `(account, student)` (Model A).**
+  The unique id is the composite `f"{account_id}:{student_id}"`
+  (`const.unique_id_for`), so a parent/guardian account can be added once per
+  child while the same student still cannot be added twice (architecture §1.1).
+  The old unique id was `account_id`, which allowed only one entry per account.
+- `config_flow.py`:
+  - `VERSION` bumped to `2`.
+  - `_async_identify` now returns the **full** parsed student list and only sets
+    `tokens.account_id`; it no longer picks `students[0]` or binds the student.
+    `GET /rest/v1/account/me` is now **required**: a failure is retryable
+    (`cannot_connect`) instead of falling back to a student id, which keeps the
+    composite id stable (no duplicate entries, no false `wrong_account`).
+  - `async_step_user` computes the unconfigured students (composite unique id not
+    in `_async_current_ids()`) and: shows `no_students` when the list is empty
+    (with a fresh PKCE pair), aborts `already_configured` when none remain,
+    auto-selects when exactly one remains, and otherwise shows the new
+    `async_step_student` dropdown (`SelectSelector`, sorted by display name then
+    id).
+  - New `_async_finish(student)` binds `student_id`/`student_name`, sets the
+    composite unique id and creates the entry; it is shared by the auto-select
+    and student-step paths.
+  - Reauth now compares `account_id` to `entry.data[account_id]` (not the unique
+    id) and aborts `student_removed` when the stored student is no longer in
+    `/rest/v1/leerlingen`; `wrong_account` is unchanged. The
+    `_new_authorization()`-on-spent-code behaviour is preserved.
+  - `async_migrate_entry` recomputes the composite unique id for v1 entries
+    (falling back to the old `account_id` when `student_id` is missing) and bumps
+    the entry to version 2. `__init__.py` re-exports the hook so Home Assistant
+    can find it.
+- `const.py`: added the transient `CONF_STUDENT_SELECT` flow key and the pure
+  `unique_id_for(account_id, student_id)` helper (no Home Assistant imports).
+- `strings.json`/`translations`: added the `student` step
+  (`student_select` label) and the `student_removed` abort, and clarified
+  `already_configured` ("this student is already configured for this account").
+  English, Dutch and `strings.json` expose identical key sets.
+- `manifest.json` bumped to `0.4.0`.
+
+### Added
+
+- Tests for the pure `unique_id_for` helper (`tests/test_const.py`) and for the
+  new flow behaviour: multiple students show the student step, choosing creates
+  the right entry, a second student of the same account succeeds with a distinct
+  unique id, duplicate `(account, student)` aborts, reauth `wrong_account` and
+  `student_removed`, and v1 → v2 migration (including the no-student fallback).
+  Total: 159 tests, 99% line coverage (`config_flow.py` 100%), all SomToday HTTP
+  mocked.
+
+### Fixed
+
+- A transient `GET /rest/v1/account/me` failure during setup or reauth is now
+  retryable (`cannot_connect`) instead of computing a student-based unique id.
+  Previously it could abort reauth with a false `wrong_account` or create a
+  duplicate entry for a student that was already configured.
+
 ## [0.3.0] - 2026-09-11
 
 ### Changed

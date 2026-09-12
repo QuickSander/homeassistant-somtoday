@@ -1,83 +1,102 @@
-# Review — SomToday v0.3.0 browser authorization-code + PKCE rewrite
+# Review — SomToday v0.4.0 Model A identity model
 
 > Reviewer: reviewer-agent (per `AGENTS.md`).
-> Date: 2026-09-11.
-> Scope: `auth.py` (`generate_code_verifier`,
-> `code_challenge_from_verifier`, `generate_state`, `build_authorize_url`,
-> `extract_code`, `async_exchange_code`, `async_refresh_tokens`,
-> `SomTodayAuth`), `config_flow.py` (single paste step, link-regeneration
-> policy, account/student identification, duplicate detection, reauth
-> `wrong_account` + reload, options reload), `api.py` (`async_get_account`,
-> `async_get_students`, 401 refresh+retry, error mapping, response release,
-> bounded error diagnostics), `models.py` (`Account`, `Student`,
-> `SomTodayTokens`), `exceptions.py` (`SomtodayInvalidAuth`), `const.py`,
-> `__init__.py`, `manifest.json`, `strings.json`, `translations/*`, plus the
-> test suite.
-> Sources of truth: `docs/architecture.md` (§3, §4, §5.1) and
+> Date: 2026-09-12.
+> Scope: the v0.4.0 **Model A identity model** — one config entry per
+> `(account_id, student_id)`:
+> `config_flow.py` (`VERSION = 2`, `async_step_user` decision table,
+> `async_step_student` + `SelectSelector`, shared `_async_finish`, required
+> `/account/me` in `_async_identify`, reauth `wrong_account` / `student_removed`,
+> `async_migrate_entry`), `const.py` (`unique_id_for`, `CONF_STUDENT_SELECT`),
+> `strings.json` + `translations/{en,nl}.json` (`student` step,
+> `student_removed`), `manifest.json` 0.4.0, the `__init__.py` re-export, and the
+> tests/docs touched by the change. The previously approved v0.3.0 auth/API/model
+> slice was re-run but not re-reviewed in depth.
+> Sources of truth: `docs/architecture.md` (§1.1, §4, §7.2.1, §10, §12, §14) and
 > `docs/test-report.md`.
-> Method: independent re-read of every file in scope, re-run of the suite,
-> coverage and lint, source inspection of the installed Home Assistant
-> 2026.9.1 framework, comparison against the reference implementation
-> (`jonisnet/ha-somtoday`) and the community API docs
-> (`elisaado/somtoday-api-docs`), and fresh black-box probes of
-> `extract_code`, the auth holder and `SomTodayTokens`.
+> Method: independent re-read of every in-scope file; re-run of the suite,
+> coverage and lint; source inspection of the installed Home Assistant 2026.9.1
+> framework (`ConfigEntry.async_migrate`, `Integration.async_get_component`,
+> `_async_current_ids`, `async_set_unique_id`, `_abort_if_unique_id_configured`,
+> `async_update_reload_and_abort`); comparison against the reference
+> implementation (`jonisnet/ha-somtoday`, current `main`) and the architecture.
 > **No production code was modified. No real SomToday API call was made.**
 
 Commands reproduced independently:
 
 ```sh
 V=/var/folders/my/41d2j1d50dg5sc8d603280x40000gn/T/opencode/sometoday-venv/bin
+$V/python -m pytest tests/ -q
+$V/python -m coverage erase
 $V/python -m pytest tests/ -q --cov=custom_components.sometoday --cov-branch \
   --cov-report=term-missing
 $V/python -m ruff check custom_components tests
-rg "xfail|skipif|pytest.mark.skip|pytest.mark.xfail" tests/ custom_components/
+rg -n "xfail|skipif|pytest.mark.skip|pytest.mark.xfail" tests/ custom_components/
 ```
 
-Observed: **135 passed, 0 failed, 0 xfailed, 0 skipped**; line coverage **99%**
-(585 statements, 2 missed); branch coverage **99%** (134 branches, 6 partial);
-`ruff` **clean** (exit 0). Per-file collection:
-`test_auth.py` 50, `test_models.py` 33, `test_config_flow.py` 29,
-`test_api.py` 20, `test_translations.py` 2, `test_manifest.py` 1. This matches
-`docs/test-report.md` exactly. No `xfail`/`skip` marker exists anywhere.
+Observed: **159 passed, 0 failed, 0 xfailed, 0 skipped**; line coverage **99%**
+(635 statements, 2 missed); branch coverage **99%** (158 branches, 6 partial);
+`config_flow.py` **100% line + 100% branch**; `const.py` **100%**; `ruff` **clean**
+(exit 0); no `xfail`/`skip` marker anywhere. This matches `docs/test-report.md`
+exactly. `strings.json` is byte-identical to `translations/en.json`, and all
+three translation files expose identical leaf keys (independently flattened).
 
 ---
 
 ## Summary
 
-The v0.3.0 browser authorization-code + PKCE rewrite is **sound, secure and
-faithful to the chosen reference implementation**. The protocol details were
-cross-checked against `jonisnet/ha-somtoday` (the integration the architecture
-explicitly follows) and the community API docs:
+The v0.4.0 Model A identity model is **correct, coherent and faithful to
+`docs/architecture.md` §1.1**. The composite identity
+`unique_id_for(account_id, student_id) == f"{account_id}:{student_id}"` is the
+single source of truth shared by the config flow and the migration, is computed
+identically in both (`str(account_id)` + `int(student_id)`), and is persisted on
+the entry, so it is stable across flows and restarts.
 
-- The authorize URL **omits `tenant_uuid`** and carries PKCE `S256`, `state`,
-  `scope=openid`, `session=no_session` and the exact redirect URI.
-- The code-exchange body (`grant_type=authorization_code`, `code`,
-  `code_verifier`, `client_id`, `scope`, `session`) matches the reference
-  byte-for-byte; neither sends `redirect_uri` or `tenant_uuid` (the docs list
-  `tenant_uuid`, but the working reference does not, and the school picker
-  handles it). aiohttp sets `Content-Type: application/x-www-form-urlencoded`
-  automatically for a `dict` body — independently confirmed against a local
-  aiohttp server.
-- `state` is validated best-effort when present, exactly as the architecture
-  §3.2 specifies; PKCE remains the real protection (the verifier never leaves
-  the flow object).
-- Rotating refresh tokens are preserved when omitted, and `api_url`/`tenant`
-  are carried across a refresh.
-- The link-regeneration policy matches the reference's `_SPENT_LINK_ERRORS`
-  behaviour: the authorize URL is kept on a recoverable paste mistake and
-  regenerated only once a code has been spent.
+Verified end-to-end from the production code and the HA framework source (not
+from test names):
 
-**There are no blocking issues.** The user's goal — deploy this release into
-Home Assistant and exercise the authorization against the real service — is not
-blocked by any finding in this review.
+- **Decision table.** 0 students → `no_students` + a freshly minted PKCE/state
+  pair; all students configured → `already_configured`; exactly one
+  unconfigured → auto-finish; more than one → `async_step_student`. The
+  `student` step re-computes the unconfigured set on every render and on submit,
+  so a student configured meanwhile is excluded (re-show remaining, or abort if
+  none remain).
+- **No duplicate entries.** `_async_unconfigured_students()` filters against
+  `self._async_current_ids()`, and `_async_finish()` additionally calls
+  `async_set_unique_id(...)` + `_abort_if_unique_id_configured()`. `_async_finish`
+  has **no suspension point** (`async_set_unique_id` is a coroutine with no
+  internal `await`; the abort/create calls are synchronous), so the
+  finish path is atomic on the event loop. The concurrent-flow test yields
+  exactly one entry and one `already_configured` abort.
+- **Reauth semantics.** A genuine account mismatch aborts `wrong_account`; a
+  stored student missing from `/leerlingen` aborts `student_removed`; a
+  transient `/account/me` failure is retryable `cannot_connect` (form, not
+  abort). The student binding cannot be silently rebound: `_async_identify` only
+  sets `tokens.account_id`, so `as_entry_data()` omits `student_id`/
+  `student_name` and `data_updates` merges over the existing entry data
+  (preserving them). `async_update_reload_and_abort` updates + reloads + aborts
+  `reauth_successful` (default reason for the reauth source) without touching the
+  unique id.
+- **Migration.** HA discovers the hook: `ConfigEntry.async_migrate` imports the
+  component module (`custom_components.sometoday.__init__`) and checks
+  `hasattr(component, "async_migrate_entry")`; `__init__.py:22` re-exports it
+  from `config_flow.py`. HA runs migration **before** `async_setup_entry`
+  (`config_entries.py:785`) and persists `version = 2`. The composite unique id
+  is recomputed from `entry.data[account_id]`/`[student_id]`.
+- **Multi-instance / multi-school.** `config_flow: true` + `integration_type:
+  "hub"` let the flow run repeatedly; each entry has a distinct composite id and
+  its own independently rotated refresh token; the authorize URL omits
+  `tenant_uuid`, so the school picker is SomToday's. Scenarios A (one account per
+  student) and B (one account, several students) both work.
 
-The suite is green, `auth.py`/`config_flow.py`/`models.py` are at 100% line
-coverage (`api.py` also 100% line), and the only coverage gaps are defensive
-branches. The residual items are non-blocking correctness/robustness nits, two
-documentation/spec divergences, and forward-looking concerns for the
-coordinator slice.
+**There are no blocking issues.** The user's original question is answered
+affirmatively: multiple instances can be added, one entry per student is the
+correct model for both scenarios, and duplicate prevention holds within an
+account. The residual items are documentation/robustness nits and the tester's
+already-known low/info findings.
 
-**Verdict: approve** (with non-blocking follow-ups; see the final verdict).
+**Verdict: approve with changes** (changes are documentation-only; see the final
+verdict).
 
 ---
 
@@ -85,158 +104,169 @@ coordinator slice.
 
 **None.**
 
-Specifically, the following were considered as potential blockers and ruled
-out:
+Considered and ruled out as blockers:
 
-- **Missing `redirect_uri`/`tenant_uuid` in the token-exchange body.** Ruled
-  out: the reference implementation sends exactly this body and omits both
-  parameters; the architecture §3.2 step 5 specifies the same. The token
-  endpoint is the native-app public client, which does not require them.
-- **Missing explicit `Content-Type`.** Ruled out: aiohttp sets
-  `application/x-www-form-urlencoded` for a `dict` body (verified against a
-  live local aiohttp server).
-- **`state` best-effort rather than strict.** Ruled out by design: the
-  architecture §3.2 step 4 specifies best-effort, and strict enforcement would
-  break the explicitly supported bare-code paste path. PKCE binds the code to
-  the flow.
-- **Token/secret leakage.** Ruled out: no token, code, verifier or password is
-  logged or persisted except the refresh token (the documented HA plaintext
-  limitation).
+- **Composite identity collision.** The `:` separator is unambiguous for real
+  SomToday ids (account id is a UUID/number, student id is an integer), and the
+  helper is shared by flow and migration, so no mismatch is possible.
+- **Duplicate entries via `raise_on_progress=False`.** No suspension point exists
+  between `_abort_if_unique_id_configured()` and `async_create_entry`, and the
+  framework guard is independently covered by the concurrency test. Deliberate,
+  per architecture §4.1.
+- **Migration not discoverable.** Disproved by HA source inspection and by
+  `test_setup_entry_migrates_v1_entry`, which drives the real
+  `ConfigEntry.async_migrate` hook.
+- **Silent student rebinding on reauth.** Disproved: `student_id`/`student_name`
+  are not in `as_entry_data()` for a fresh exchange and `data_updates` merges.
+- **`/account/me` required.** Correct for Model A (see the dedicated section
+  below).
 
 ---
 
 ## Non-blocking findings
 
-These do **not** block deployment or the authorization test. They are ordered
-by value; the first two are the only ones I would schedule before a wider
-public release.
+Ordered by value. `M` = identity-model findings; carry-overs from the v0.3.0
+review keep their original `R`/`T` identifiers.
 
-### R1 — Documentation/code divergence on `state` mismatch (Low)
+### M1 — README still documents the removed `/account/me` fallback (Medium, docs)
 
-`docs/architecture.md` §5.1 and the `exceptions.py` docstring say a `state`
-mismatch raises `SomtodayInvalidAuth` and surfaces as `invalid_auth`.
-`auth.py::extract_code` (lines 142–155) actually raises `ValueError
-("state_mismatch")`, and `config_flow.py` (lines 250–251) maps it to the
-`state_mismatch` error key. The implemented behaviour is the **better UX** and
-is covered by tests; the docs are stale. Recommend updating §5.1 and the
-`SomtodayInvalidAuth` docstring to match the code (or, less desirable, the
-code to match the docs). Documentation-only.
+`README.md:69-71` says Home Assistant "reads `/rest/v1/account/me` (falling back
+to `/rest/v1/leerlingen`)". That fallback was **removed by the F1 fix** and is
+the opposite of the new contract (`config_flow.py:359-380`; architecture §1.1).
+`README.md:7` also still says "Current status: authentication only (v0.3.0)",
+and the README never mentions the new student-selection step or the
+one-entry-per-student model. Because AGENTS.md makes documentation part of every
+change, this must be corrected before the release is announced. Documentation
+only; no runtime impact.
 
-### R2 — Redirect `error=` is not handled (Low)
+### M2 — `Account.id` takes the first link, not the `rel == "self"` link (Low, identity robustness)
 
-`extract_code` has no handling for an OAuth2 error redirect such as
-`somtoday://…?error=access_denied&state=…`. Probe result: it falls through to
-`no_code`, which the flow shows as the generic `invalid_url`
-("Could not find an authorization code"). The reference implementation raises
-`redirect_error:<code>` and can surface a specific message. Recommend adding an
-`error=` branch and a dedicated translation key. UX only; does not block the
-happy path.
+`models.py::_first_link_id` (lines 46-53) returns the first `links[*]` entry that
+has an `id`, regardless of `rel`. `Student._extract_id` (lines 113-128) prefers
+`rel == "self"`, and the reference implementation's `_account_unique_id` requires
+`rel == "self"`. Since `account_id` is now half of the persisted unique id, a
+payload whose first link is not the account self-link would produce a
+different/unstable account id. `test_parse_account_uses_first_link` codifies the
+first-link behaviour, and architecture §7.3 specifies `links[0].id`, so the code
+follows the spec — but the spec and the `Student` parser disagree with the
+reference. Recommend confirming a real `/account/me` payload (tester blocker #1)
+and, if it has multiple links, aligning with `Student`/the reference by
+preferring `rel == "self"`. Low probability, non-blocking.
 
-### R3 — `SomTodayTokens.from_token_response` accepts a null/empty access token (Low)
+### M3 — A v0.3.0 entry created via the old fallback cannot be repaired by migration (Low)
 
-`models.py` line 222 does `str(payload["access_token"])`, so a response with
-`"access_token": null` yields the literal string `"None"`, and `""` yields an
-empty bearer token. Probe confirmed both. The reference explicitly rejects a
-falsy `access_token`. Recommend raising `ValueError` when the access token is
-missing or empty. Real SomToday responses always carry one, so this is
-defensive only.
+v0.3.0's `_async_identify` set `account_id = str(students[0].id)` when
+`/account/me` failed, so such an entry stored a **student id as the account id**.
+Migration faithfully computes `unique_id_for("1234", 1234) == "1234:1234"`, but
+reauth then compares the real account id (e.g. `account-1`) to
+`entry.data[account_id] == "1234"` and always aborts `wrong_account`. Migration
+cannot recover the true account id without a network call. Only affects users
+who installed v0.3.0 while `/account/me` was unavailable. Non-blocking; worth a
+release note ("delete and re-add entries that show `wrong_account` after
+upgrading").
 
-### R4 — `403` maps to `SomTodayAuthError` and would force reauth in the coordinator slice (Low, forward-looking)
+### M4 — Migration raises on a non-numeric stored `student_id` (Low)
 
-`api.py::_request` refreshes only on `401`; `_async_decode` (lines 161–165)
-maps `403` to `SomTodayAuthError`. `docs/architecture.md` §5.1 says `401`/`403`
-should refresh once. In this slice the data API is only called from the config
-flow, where `SomTodayError` is caught, so a `403` cannot trigger reauth today.
-When the coordinator lands, a permission-related `403` on a data endpoint would
-become `ConfigEntryAuthFailed` and prompt an unnecessary reauth. The reference
-deliberately treats `403` as a retryable permission error (`SomTodayApiError`),
-never reauth. Recommend aligning before the coordinator slice. (Tester T3 is the
-same observation.)
+`config_flow.py:93` does `int(student_id)`. A hand-edited/corrupt v1 entry with
+`student_id = "abc"` raises `ValueError` inside `async_migrate_entry`; HA catches
+it (`config_entries.py:1204-1208`), logs, and marks the entry
+`MIGRATION_ERROR`. The missing-`student_id` case is handled; the malformed case
+is not. Consider `try/except` with the existing `str(account_id)` fallback.
+Defensive only.
 
-### R5 — `SomTodayTokens.from_entry` raises a bare `KeyError` on a malformed entry (Low, carry-over N10)
+### M5 — Migration does not bump versions below 1 (Info)
 
-`models.py` line 264 reads `data[CONF_REFRESH_TOKEN]` unguarded. A config entry
-missing that key makes `async_setup_entry` fail with an unhandled `KeyError`
-rather than a domain error, so HA reports `SETUP_ERROR` with no reauth path.
-The flow always writes the key, so only a hand-edited/corrupt entry triggers
-it. Recommend a domain error (`SomTodayAuthError`) for a clean reauth/retry
-path.
+`async_migrate_entry` only acts on `entry.version == 1` and returns `True` for
+everything else. An entry with `version == 0` is never bumped, so HA re-runs the
+(no-op) migration on every setup. No error, just repeated work. Consider
+`if entry.version < SomTodayConfigFlow.VERSION:`.
 
-### R6 — `async_set_unique_id(..., raise_on_progress=False)` weakens concurrent duplicate protection (Info)
+### M6 — `config.error.wrong_account` is unused (Info; tester F3)
 
-`config_flow.py` line 159 passes `raise_on_progress=False`. The HA convention
-(and the reference) is the default `True`, which aborts a second in-progress
-flow for the same unique id. With `False`, two simultaneous add-integration
-flows for the same account can both reach `_abort_if_unique_id_configured()`
-before either is configured. `_abort_if_unique_id_configured()` still catches
-the sequential case (tested). Minor race only.
+Reauth aborts with `async_abort(reason="wrong_account")`, resolved by
+`config.abort.wrong_account`. The identical `config.error.wrong_account` key
+(`strings.json:43`) is never selected. Harmless duplication; remove or leave.
 
-### R7 — Forced `async_refresh()` is not deduplicated (Info, tester T6 confirmed)
+### M7 — `_async_current_ids(include_ignore=True)` counts ignored entries (Info; tester F4)
 
-Two concurrent `async_refresh()` calls issue two token requests (probe: 2
-calls). `async_ensure_valid()` is correctly deduplicated by the lock (3
-concurrent callers → 1 request, tested). With rotating tokens this is correct,
-just wasteful; only relevant once concurrent API calls exist.
+HA's `_async_current_ids()` defaults to `include_ignore=True`
+(`config_entries.py:3251-3258`), while `_abort_if_unique_id_configured` allows a
+`SOURCE_USER` flow to re-configure an ignored entry
+(`config_entries.py:3189-3190`). An ignored entry with a composite unique id
+would therefore suppress re-adding that student. This integration has no
+discovery/ignore step (`manifest.json` declares no discovery and the flow has no
+`async_step_dhcp`/`zeroconf`/`ssdp`), so the branch is unreachable. Agree with
+the tester: Info, no defect.
 
-### R8 — Runtime token rotation is not persisted outside setup (Info, carry-over N13)
+### M8 — `raise_on_progress=False` deviates from the HA default (Info)
 
-`__init__.py` lines 72–77 persist the rotation performed during setup. A later
-reactive `401` refresh inside `api.py` rotates the token in memory with no
-write-back. Unreachable today (no coordinator, no post-setup API calls) and
-config-flow rotations are persisted via `as_entry_data()`. The coordinator must
-own persistence.
+`config_flow.py:399-401` passes `raise_on_progress=False`, disabling HA's
+`already_in_progress` guard (`config_entries.py:3206-3213`). Architecture §4.1
+mandates it, and no duplicate is reproducible (no suspension point; concurrency
+test). Observation only. Using the default `True` would be marginally more
+defensive at the cost of aborting the second of two parallel flows with a less
+specific reason.
 
-### R9 — Documentation nits (Info)
+### M9 — Production `assert`s in the config flow (Info; carry-over)
 
-- `docs/CHANGELOG.md` line 49 says "131 tests"; the suite is 135.
-- `docs/architecture.md` §11 manifest snippet still shows `"version": "0.2.0"`
-  (real manifest: `0.3.0`).
-- `docs/architecture.md` §10 constants snippet uses `CLIENT_ID` and omits
-  `CLIENT_ID_APP`/`PKCE_CHARSET`/`SESSION_NO_SESSION`/`CODE_VERIFIER_LENGTH`/
-  `STATE_LENGTH`/`REQUEST_TIMEOUT`, all of which exist in `const.py`.
+`config_flow.py:211` (`_account_id is not None`) and `395-396`
+(`_tokens`/`_account_id is not None`) are stripped under `python -O`. Both are
+unreachable because the attributes are always set before the step runs. Replace
+with explicit guards or `cast` if desired. Unchanged from the prior review.
 
-### R10 — `manifest.json` `integration_type` is `hub` (Info, carry-over N15)
+### M10 — Reauth uses `self.context["entry_id"]` instead of `_get_reauth_entry()` (Info; carry-over)
 
-SomToday is a cloud *service*; `service` is the accurate classification.
-Metadata-only, no functional impact. `test_manifest.py` currently pins
-`"hub"`, so the test must change with the manifest.
+`config_flow.py:247-249` fetches the entry manually. Works (reauth always sets
+the context) but is less idiomatic than HA's `self._get_reauth_entry()`. Also,
+if the entry were deleted mid-flow, the flow re-shows the form forever instead
+of aborting. Very low probability.
 
-### R11 — Test-quality nits (Info)
+### M11 — Cross-account duplicate of the same student, and imprecise doc wording (Info)
 
-- `aioresponses` is declared in `requirements_test.txt` but unused (the suite
-  uses the hand-rolled `FakeSession`/`FakeResponse`).
-- `test_translations.py` compares leaf keys but not `{placeholder}` sets, so a
-  missing `{auth_url}` in `nl.json` would not be caught by the parity test
-  (the EN load test does check `{auth_url}`).
-- `test_manifest.py` pins `integration_type == "hub"` (see R10).
+Because identity is the pair, the **same student under two different accounts**
+gets two distinct unique ids and can be added twice
+(`test_unique_id_for_distinguishes_accounts_for_one_student`). Architecture §1.1
+and `CHANGELOG.md` say "the same student still cannot be added twice", which is
+true only within one account. The behaviour is intentional (each account has its
+own session/refresh token) and matches the stated Model A, but the wording should
+be qualified. No action required beyond the doc clarification.
 
-### R12 — Dead `_LOGGER` definitions (Info)
+### M12 — Documentation nits (Info)
 
-`auth.py` line 58 and `__init__.py` line 28 define `_LOGGER` but never use it.
-Harmless.
+- `README.md:7` status is `v0.3.0` (should be `v0.4.0`).
+- `docs/CHANGELOG.md:51` says "Total: 151 tests"; the suite is **159**.
+- `docs/CHANGELOG.md:99` (0.3.0) says "140 tests", while the v0.3.0 review and
+  test-report recorded 135. Pre-existing.
+- The README does not document the `student` step, the one-entry-per-student
+  model, or the `student_removed` troubleshooting case.
+- `manifest.json` keeps `integration_type: "hub"`; the prior review suggested
+  `"service"`. Architecture §1.1 explicitly chooses `hub` (it enables repeat
+  config flows), so this is now intentional — no change needed.
 
-### R13 — `async_step_reauth` uses `self.context["entry_id"]` (Info)
+### M13 — Account id and student name are logged at INFO (Info, privacy)
 
-`config_flow.py` lines 176–178 fetch the entry via
-`self.hass.config_entries.async_get_entry(self.context["entry_id"])` instead of
-the modern `self._get_reauth_entry()`. Works (reauth always sets the context),
-slightly less idiomatic.
+`__init__.py:74-78` logs the student name and account id on every setup/reload.
+No token or secret is logged (independently re-confirmed: the test asserts the
+refresh token is absent from the log). This is PII, not a credential; acceptable
+for diagnostics, but worth noting for privacy-sensitive users.
 
-### R14 — Production `assert`s in the config flow (Info, carry-over Finding B)
+### Carry-over findings from v0.3.0 (unchanged, non-blocking)
 
-`config_flow.py` lines 161 and 194 use `assert self._tokens is not None`.
-Stripped under `python -O`; unreachable because `_tokens` is assigned before
-the return. Replace with an explicit guard or `cast` if desired.
+These are unrelated to the identity model and were not touched by this change:
 
-### Out of scope / cannot be verified here
-
-- **Real-account validation** of the live authorize/token endpoints, the
-  refresh-token rotation behaviour and the architecture §12.1 token-host
-  pairing. Live calls are prohibited; the human must arrange this. This is the
-  same blocker the tester reports.
-- **Coordinator/entity modules** (`coordinator.py`, `sensor.py`,
-  `binary_sensor.py`, `calendar.py`, `entity.py`) do not exist yet; their
-  review is the next slice.
+- **R2** — redirect `error=` is not handled (generic `invalid_url`).
+- **R3** — `SomTodayTokens.from_token_response` accepts a null/empty access token.
+- **R4 / T3** — `403` maps to `SomTodayAuthError` and will force reauth once the
+  coordinator exists; the reference treats `403` as retryable.
+- **R5** — `SomTodayTokens.from_entry` raises a bare `KeyError` on a malformed
+  entry.
+- **R7 / T6** — concurrent forced `async_refresh()` calls are not deduplicated.
+- **R8** — runtime token rotation is only persisted during setup/reauth.
+- **R12** — dead `_LOGGER` definitions.
+- **T4** — `/account/me` omits `additional=restricties` (harmless; the id comes
+  from `links`).
+- **T7–T9** — low-probability paste edge cases (bare `code=` fragment, quoted
+  `Location:`, multiple `Location:` lines).
 
 ---
 
@@ -244,17 +274,16 @@ the return. Replace with an explicit guard or `cast` if desired.
 
 | Area | Result | Notes |
 |------|--------|-------|
-| Password never requested/stored/logged | **Pass** | No `password` reference in the component (grep). The flow is browser-based; HA never sees a credential. |
-| Authorization code handling | **Pass** | `extract_code` returns it for a one-shot exchange; never assigned to the entry, never logged. |
-| PKCE verifier handling | **Pass** | 128 chars from the documented app alphabet via `secrets.choice`; S256 challenge; stored only on the in-memory flow object; never persisted/logged. |
-| `state` handling | **Pass (best-effort, by design)** | Generated per flow (`secrets`, 32 alphanumeric chars ≈ 190 bits) and compared with `unquote` when the paste carries one. PKCE is the binding control; strict state would break the supported bare-code paste. |
-| Refresh-token storage / rotation | **Pass with caveat** | Persisted in `entry.data` (plaintext in `.storage/core.config_entries` — the documented HA limitation). Rotation persisted at setup and reauth; runtime rotation gap is R8. |
-| No secret/token logging | **Pass** | No token/code/verifier appears in any log message. `api.py::_log_error_summary` logs only a bounded (500/200 char) response `Location`/body at `debug`, never request headers. `config_flow.py` uses `_LOGGER.exception` (traceback without locals) and a debug account fallback. |
-| Hard-coded secrets | **Pass** | Only the public OAuth2 client id (`somtoday-leerling-native`); no client secret, keys or tokens. |
-| TLS / hosts | **Pass** | All endpoints are HTTPS with default verification. |
-| Shared HA session cookie jar | **Pass with caveat** | `async_get_clientsession(hass)` is HA's shared session; SomToday cookies (e.g. `JSESSIONID`) are host-scoped, so cross-domain leakage is not realistic. No login-form scraping means no session cookies are actually needed. |
-| Exception/log injection | **Pass** | The pasted value is never interpolated into logs; only fixed reason strings are raised/translated. |
-| Broad `except Exception` | **Pass** | Catches only truly unexpected errors, logs a traceback (no locals) and shows `unknown`. |
+| Password / client secret | **Pass** | No `password` or `client_secret` anywhere in the component. Browser PKCE only. |
+| Authorization code handling | **Pass** | Exchanged once; never stored on the entry or logged. |
+| PKCE verifier / `state` | **Pass** | In-memory per flow; regenerated on a spent code and on `no_students`; never persisted/logged. |
+| Refresh-token storage | **Pass with caveat** | Plaintext in `.storage/core.config_entries` (documented HA limitation). Each entry owns its own rotated token. |
+| No secret/token logging | **Pass** | INFO logs only student name + account id; the token-absence assertion passes. `api._log_error_summary` logs only bounded response metadata at debug. |
+| Composite unique id | **Pass** | Not a secret; contains account/student ids already known to HA. `:` separator cannot be confused with real ids. |
+| Reauth account binding | **Pass** | `wrong_account` abort prevents an entry being rebound to another account; student binding is preserved on success. |
+| Shared HA session | **Pass with caveat** | `async_get_clientsession(hass)`; SomToday cookies are host-scoped. |
+| Migration | **Pass** | Only unique id + version change; no data written from untrusted input. Malformed input cannot inject (see M4 for the MIGRATION_ERROR edge). |
+| Broad `except Exception` | **Pass** | Logs a traceback without locals and shows `unknown`. |
 
 No security-blocking issue found.
 
@@ -264,69 +293,117 @@ No security-blocking issue found.
 
 | Practice | Result | Notes |
 |----------|--------|-------|
-| `entry.runtime_data` pattern | **Pass** | `SomTodayConfigEntry = ConfigEntry[SomTodayRuntimeData]`; HA clears `runtime_data` on unload, so no manual cleanup. |
-| `ConfigEntryAuthFailed` vs `ConfigEntryNotReady` | **Pass** | `SomtodayInvalidAuth` → reauth; connection/other `SomTodayError` → retry (`__init__.py` 64–67). Correct. |
-| Reauth in place | **Pass** | `async_update_reload_and_abort(entry, data_updates=…, reason="reauth_successful")`; a `SETUP_ERROR` entry recovers to `LOADED` (test `test_reauth_after_failed_setup_reloads_entry`). |
-| Reauth `wrong_account` | **Pass** | Manual `account_id != entry.unique_id` compare aborts with `wrong_account`; correct because reauth never sets a unique id (T5 is the unreachable `unique_id is None` case). |
-| Duplicate detection / unique id | **Pass with note** | `async_set_unique_id(account_id)` + `_abort_if_unique_id_configured()` → `already_configured` (tested). `raise_on_progress=False` is a minor deviation (R6). |
-| Options flow + reload | **Pass** | Modern `OptionsFlow` (`self.config_entry` auto-injected); saving calls `async_schedule_reload(entry.entry_id)` (tested). No update listener, per architecture §4.1. |
-| Config-flow UX (authorize link, DevTools guidance) | **Pass** | The authorize URL is an `{auth_url}` placeholder; the description gives both the address-bar and Chrome DevTools `Location:` methods; a bare code is accepted. |
-| Link-regeneration policy | **Pass** | Kept on recoverable paste errors (`invalid_url`/`login_page`/`state_mismatch`); regenerated once a code is spent or the failure is non-paste (tested by `test_authorize_url_kept_on_recoverable_paste` / `test_authorize_url_regenerated_when_spent`). Matches the reference's `_SPENT_LINK_ERRORS`. |
-| Async resource lifecycle | **Pass** | Every response is released on success and error paths (token request `finally`, 401 first response, decoded response `finally`); no double-release (tests). |
-| Translations | **Pass with note** | `strings.json`/`en.json`/`nl.json` have identical leaf keys and load in HA; `{auth_url}` present in both. Placeholder-set parity is untested (R11). |
-| Manifest / version gate | **Pass with note** | `domain`, semver `version` 0.3.0, `config_flow`, `iot_class: cloud_polling`, `integration_type`, empty `requirements`, `loggers` present. `integration_type` should be `service` (R10). |
-| Deployability | **Pass** | Correct `custom_components/sometoday/` layout, valid manifest, `hacs.json` with `homeassistant: 2024.11.0`, `pytest.ini` with `asyncio_mode = auto`, README with install/config/troubleshooting. |
-| Test isolation | **Pass** | No real network; `FakeSession` raises when exhausted. |
+| Composite unique id + `_abort_if_unique_id_configured` | **Pass** | Shared helper; abort reason `already_configured`; concurrency test. |
+| `_async_current_ids()` usage | **Pass with note** | Correct for filtering unconfigured students; default `include_ignore=True` is unreachable here (M7). |
+| `async_set_unique_id(..., raise_on_progress=False)` | **Pass with note** | Deliberate per architecture; no duplicate reproducible (M8). |
+| `async_step_student` + `SelectSelector` | **Pass** | `SelectSelectorConfig(options=[{"value": str(id), "label": name}])`; string values compared with `str(student.id)`; sorted by `(display_name, id)`. Valid and usable. |
+| Decision table | **Pass** | Matches architecture §4.1 exactly (0/≥1, 0/1/>1). |
+| Reauth in place | **Pass** | `async_update_reload_and_abort(entry, data_updates=..., reason="reauth_successful")`; preserves unique id and student binding; recovers `SETUP_ERROR` → `LOADED`. |
+| `wrong_account` / `student_removed` / retryable | **Pass** | Genuine mismatch aborts; transient failure is `cannot_connect`; missing student aborts `student_removed`. No silent rebinding. |
+| Migration hook | **Pass** | Re-exported from `__init__.py`; discovered by `Integration.async_get_component()`; runs before setup; `version` persisted; covered by the real HA hook test. |
+| Translation parity | **Pass with note** | `strings.json` == `en.json` byte-for-byte; all three files have identical leaf keys and load in HA. `config.error.wrong_account` unused (M6). |
+| Manifest / version | **Pass** | `domain`, semver `0.4.0`, `config_flow`, `iot_class: cloud_polling`, `integration_type: hub`, empty `requirements`, `loggers`. |
+| Options flow + reload | **Pass** | Unchanged, still schedules a reload. |
+| Async resource lifecycle | **Pass** | Responses released on success/error; unchanged. |
+| Test isolation | **Pass** | All HTTP mocked; no marker skips; `ruff` clean. |
 
 ---
 
 ## Tester-findings adjudication
 
-I independently re-verified the tester's T1/T2 fixes and adjudicated T3–T9.
+| ID | Tester claim | My adjudication | Status |
+|----|--------------|-----------------|--------|
+| **F1** | Account-id fallback misidentified the account | **Confirmed fixed.** `/account/me` is required; `_async_identify` returns non-optional `tuple[str, list[Student]]`; `SomTodayError` propagates to retryable `cannot_connect`. Reproduced from source and the regression tests. | **Fixed** |
+| **F1b** | Duplicate student via the fallback | **Confirmed fixed.** A failing `/account/me` cannot compute a student-based unique id; the pre-existing entry is the only one. | **Fixed** |
+| **F2** | Migrated entry without a student id is un-reauthable | **Agree, Low, non-blocking.** `student_id is None` → reauth `any(student.id == None)` is False → `student_removed`. Only malformed/hand-edited v1 entries. I add the adjacent **M3** (v0.3.0 fallback stored a student id as the account id) and **M4** (non-numeric id → `MIGRATION_ERROR`). | Open, non-blocking |
+| **F3** | `config.error.wrong_account` unused | **Agree, Info.** Reauth aborts (resolved via `config.abort.wrong_account`); the error key is never selected. Harmless. | Open, non-blocking |
+| **F4** | `_async_current_ids(include_ignore=True)` counts ignored entries | **Agree, Info, unreachable.** No discovery/ignore step exists in this integration. Confirmed against `config_entries.py:3251` and `:3189`. | Open, non-blocking |
+| `raise_on_progress=False` | No defect | **Agree.** HA source confirms the guard is disabled; the finish path has no suspension point, so exactly one entry is created (concurrency test). Architecture mandates it. | Observation, no defect |
+| **T3 / R4** | 403 does not trigger a reactive refresh | **Agree, non-blocking, forward-looking.** Must be settled before the coordinator slice (permission 403 would force reauth). | Open, non-blocking |
+| **T4** | `/account/me` omits `additional=restricties` | **Agree, non-blocking.** The id comes from `links`, not from additional objects. | Open, non-blocking |
+| **T6 / R7** | Concurrent forced refreshes not deduplicated | **Agree, non-blocking.** `async_ensure_valid()` is lock-deduplicated; only forced refreshes duplicate. | Open, non-blocking |
+| **T7–T9** | Paste edge cases | **Agree, by design/low probability.** The UI never instructs those inputs. | Open, non-blocking |
+| Production `assert`s | — | **Agree, non-blocking.** Unreachable; stripped under `-O`. | Open, non-blocking |
 
-| ID | Finding | Adjudication | Status |
-|----|---------|--------------|--------|
-| **T1** | `extract_code` cookie/header false positive | **Confirmed fixed.** `_LOCATION_RE` prefers the `Location` line and `_CODE_RE`/`_STATE_RE` require a `[?&]` boundary. My probe: `Set-Cookie: state=WRONG` + `Location: …?code=REAL&state=S` → `REAL`. Regression test passes normally. | **Fixed** |
-| **T2** | Bare percent-encoded code rejected | **Confirmed fixed.** `extract_code("ABCDEFGH%2FIJ%2BK")` → `ABCDEFGH/IJ+K`; `ABCDEFGH%3D%26` → `ABCDEFGH=&`. Test passes. | **Fixed** |
-| **T3** | 403 does not trigger a reactive refresh | **Agree, non-blocking.** `_request` retries only `401`; `_async_decode` maps `403` to `SomTodayAuthError`. Diverges from architecture §5.1 and from the reference (which treats 403 as retryable). Unreachable today; becomes relevant with the coordinator (see **R4**). | Open, non-blocking |
-| **T4** | `/rest/v1/account/me` omits `additional=restricties` | **Agree, non-blocking.** The reference also sends no params; the unique id comes from `links[0].id`, so the omission is harmless. | Open, non-blocking |
-| **T5** | Reauth wrong-account check skipped when `unique_id is None` | **Agree, non-blocking.** Unreachable for entries created by this flow (they always set a unique id). | Open, non-blocking |
-| **T6** | Concurrent forced refreshes not deduplicated | **Reproduced.** 2 concurrent `async_refresh()` → 2 token requests; `async_ensure_valid()` is deduplicated. Correct but wasteful (see **R7**). | Open, non-blocking |
-| **T7** | Bare query fragment `code=…` (no `?`) no longer recognised | **Agree, by design.** The `[?&]` boundary is required for the T1 fix; the UI never instructs a bare fragment. | Open, by design |
-| **T8** | Quoted `Location:` value not unwrapped | **Reproduced.** `Location: "somtoday://…?code=ABC&state=S"` → `state_mismatch`. DevTools "Copy value" does not add quotes; low probability. | Open, non-blocking |
-| **T9** | Multiple `Location:` lines uses the first | **Reproduced.** A login-page `Location` followed by the callback `Location` → `login_page`. Copying the final response works; low probability. | Open, non-blocking |
+The tester's report is **accurate**: counts, coverage, marker removal and the
+F1/F1b regression tests all reproduce. I found one additional documentation
+defect the tester did not list (**M1**, README still documents the removed
+fallback) and two migration edge cases (**M3**, **M4**).
 
-The tester's final report is **accurate**: counts, coverage, marker removal and
-regression tests all reproduce. I found one additional gap the tester did not
-list (**R2**, redirect `error=`), which is consistent with the reference but
-absent from this code.
+---
+
+## Multi-instance / multi-school behaviour (the user's original question)
+
+**Confirmed correct.** Multiple instances can be added and one entry per student
+is the right model for both architecture scenarios:
+
+| Scenario | Result |
+|----------|--------|
+| A — one SomToday account per student, possibly different schools | One entry per account/student; distinct composite ids. The authorize URL omits `tenant_uuid`, so the school picker is SomToday's and works for any school. |
+| B — one parent account seeing several students | Flow shows the `student` step for >1 unconfigured students; one entry per child; adding a second child of an already-configured account auto-selects the remaining one and creates a distinct entry. |
+| Multiple HA instances of the integration | Allowed by `config_flow: true`; each entry keeps its own refresh token and composite id. |
+
+Within one account the same student cannot be added twice (duplicate filter +
+unique-id abort). Across two different accounts the same student can (M11) — the
+documented "cannot be added twice" wording should be qualified to "per account".
+
+---
+
+## `/account/me` required vs the reference integration's fallback
+
+**The F1 fix is the right call for Model A.** The reference's fallback is
+narrower than it looks and does not contradict this design:
+
+- In `jonisnet/ha-somtoday`, `async_get_account()` and `async_get_students()`
+  are in the **same `try`**; an `/account/me` failure returns `cannot_connect`
+  and never reaches the fallback. The `_account_unique_id(account) or
+  parsed[0].uuid` fallback only applies when `/account/me` **succeeds but has no
+  usable self-link**.
+- That reference uses a **one-entry-per-account** model (title lists all
+  students), so a student-based fallback is harmless there. Under Model A
+  (one entry per student), a student-based `account_id` would make the unique id
+  change with the student and break reauth/duplicate detection — exactly the
+  F1/F1b bug.
+- This integration has **no fallback at all**: a 200 response without a usable id
+  makes `parse_account` raise, which `api.async_get_account` maps to
+  `SomTodayApiError` → retryable `cannot_connect`. That is strictly safer than
+  minting an unstable id.
+
+The only residual risk is operational: setup now depends on `/account/me` being
+available. The tester's blocker #1 (live validation prohibited) means this cannot
+be confirmed against the real service here; the reference makes the same
+assumption, so this is acceptable. See **M2** for the related
+`rel == "self"` link-selection question.
 
 ---
 
 ## Final verdict
 
-**Approve.**
+**Approve with changes.**
 
-- **No blocking issues.** The release is ready to be deployed into Home
-  Assistant and used to test the real authorization. The happy path is
-  protocol-correct against the reference implementation and the API docs.
-- **Security:** no password, no secret/token logging, PKCE correctly
-  implemented, refresh token stored with the documented HA caveat.
-- **Home Assistant patterns:** `runtime_data`, reauth reload, `ConfigEntryAuth
-  Failed`/`NotReady` mapping, options reload and translations all follow the
-  framework; the only notes are metadata/UX-level.
-- **Tests:** 135/135 pass, 0 xfailed/skipped, 99% line/branch, `ruff` clean —
-  independently reproduced.
+- **No blocking issues.** The identity model is correct, stable and free of
+  duplicate-entry paths; reauth cannot silently rebind; migration is discovered,
+  ordered correctly and persists `version = 2`; multi-instance and multi-school
+  both work.
+- **Security:** no password/secret, no token/code logging, correct PKCE/`state`,
+  refresh token stored under the documented HA caveat.
+- **Home Assistant patterns:** composite unique id + abort, `SelectSelector`
+  step, `async_update_reload_and_abort`, migration hook, translation parity and
+  manifest bump all follow the framework. The only deviations
+  (`raise_on_progress=False`, `_async_current_ids` include-ignore) are deliberate
+  or unreachable.
+- **Tests:** 159/159 pass, 0 xfailed/skipped, 99% line/branch,
+  `config_flow.py`/`const.py` 100%, `ruff` clean — independently reproduced.
 
-Recommended (non-blocking) follow-ups before a wider public/HACS release:
-**R1** (align docs with the implemented `state_mismatch`), **R2** (handle
-redirect `error=`), **R3** (reject a null access token), **R5** (domain error
-for a malformed entry), **R10** (`integration_type: service`) and **R9**
-(doc nits). **R4**/**R8** must be addressed when the coordinator slice lands.
+**Required before release (documentation only):** fix **M1** (README's removed
+fallback claim and stale `v0.3.0` status) and **M12** (CHANGELOG test count and
+the missing student-selection documentation). Recommended follow-ups, all
+non-blocking: **M2** (confirm/link `rel == "self"` selection on `/account/me`),
+**M3**/**M4** (migration edge cases), and the tester's **F2** (Low) / **F3**,
+**F4** (Info). The v0.3.0 carry-overs (notably **T3/R4**) must be addressed when
+the coordinator slice lands.
 
 ### Changes made by this review
 
-- `docs/review.md` rewritten for the v0.3.0 browser authorization-code + PKCE
-  state. **No production code was modified.**
-
-*No production code was modified by this review.*
+- `docs/review.md` rewritten for the v0.4.0 Model A identity model.
+  **No production code was modified.**

@@ -4,7 +4,7 @@ A Home Assistant custom component that logs in to [SomToday](https://www.somtoda
 and (eventually) exposes a student's schedule, homework, grades and absence as
 Home Assistant entities.
 
-> **Current status: authentication only (v0.3.0).**
+> **Current status: authentication only (v0.4.0).**
 > This release installs and authenticates against SomToday so the login flow can
 > be tested from the Home Assistant UI. **No entities, sensors or coordinator are
 > added yet** — the integration currently validates the session during setup and
@@ -66,9 +66,11 @@ flow as the official app:
    > `https://inloggen.somtoday.nl/oidc?code=…&state=…&session_state=…` is an
    > intermediate SSO step; its `code` cannot be exchanged. Keep going until the
    > browser tries to open `somtoday://…` and use that.
-5. Home Assistant exchanges the code for tokens, reads
-   `/rest/v1/account/me` (falling back to `/rest/v1/leerlingen`) and creates the
-   config entry. Only the rotating refresh token and account metadata are stored.
+5. Home Assistant exchanges the code for tokens, reads `/rest/v1/account/me`
+   and `/rest/v1/leerlingen`, and creates the config entry. If the account sees
+   more than one student, you pick one; the integration adds **one entry per
+   student**, so a parent/guardian account can be added once for each child.
+   Only the rotating refresh token and account metadata are stored.
 
 If the paste is wrong (for example you copied the login page instead of the
 redirect), the form tells you and **keeps the same authorize URL**, so you can
