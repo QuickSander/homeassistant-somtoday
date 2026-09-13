@@ -257,12 +257,25 @@ class Lesson:
         if start is None or end is None:
             raise ValueError("Lesson is missing a usable start or end time")
 
+        # The ``additional`` query parameters (vak, docentAfkortingen) are
+        # returned nested under ``additionalObjects``. A flat payload is also
+        # tolerated (older fixtures/proxies put the objects at the top level).
+        additional = payload.get("additionalObjects")
+        if not isinstance(additional, Mapping):
+            additional = {}
+
         subject: str | None = None
         subject_abbr: str | None = None
-        vak = payload.get("vak")
+        vak = additional.get("vak")
+        if not isinstance(vak, Mapping):
+            vak = payload.get("vak")
         if isinstance(vak, Mapping):
             subject = _as_str(vak.get("naam"))
             subject_abbr = _as_str(vak.get("afkorting"))
+
+        teacher = _as_text(additional.get("docentAfkortingen"))
+        if teacher is None:
+            teacher = _as_text(payload.get("docentAfkortingen"))
 
         lesson_type: str | None = None
         afspraak_type = payload.get("afspraakType")
@@ -273,7 +286,7 @@ class Lesson:
             id=_as_str(_first_link_id(payload)),
             subject=subject,
             subject_abbr=subject_abbr,
-            teacher=_as_text(payload.get("docentAfkortingen")),
+            teacher=teacher,
             room=_as_str(payload.get("locatie")),
             start=start,
             end=end,

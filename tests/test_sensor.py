@@ -412,12 +412,14 @@ def _raw_lesson(start: datetime) -> dict[str, Any]:
     """Return one appointment inside the coordinator window."""
     return {
         "links": [{"id": 1, "rel": "self"}],
-        "vak": {"naam": "Wiskunde", "afkorting": "WI"},
-        "docentAfkortingen": "JDO",
         "locatie": "B12",
         "beginDatumTijd": start.isoformat(),
         "eindDatumTijd": (start + timedelta(minutes=50)).isoformat(),
         "afspraakType": {"naam": "LES"},
+        "additionalObjects": {
+            "vak": {"naam": "Wiskunde", "afkorting": "WI"},
+            "docentAfkortingen": "JDO",
+        },
     }
 
 

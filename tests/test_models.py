@@ -374,20 +374,22 @@ def test_parse_students_invalid_payloads() -> None:
 # ---------------------------------------------------------------------------
 LESSON_PAYLOAD: dict[str, Any] = {
     "links": [{"id": 987, "rel": "self"}],
-    "vak": {"naam": "Wiskunde", "afkorting": "WI"},
-    "docentAfkortingen": ["JDO", "AB"],
     "locatie": "B12",
     "beginDatumTijd": "2026-09-12T08:30:00+02:00",
     "eindDatumTijd": "2026-09-12T09:20:00+02:00",
     "titel": "Wiskunde",
     "afspraakType": {"naam": "LES"},
+    # The ``additional`` objects are nested under ``additionalObjects`` in the
+    # real SomToday payload (subject/teacher are requested via ``additional``).
     "additionalObjects": {
+        "vak": {"naam": "Wiskunde", "afkorting": "WI"},
+        "docentAfkortingen": ["JDO", "AB"],
         "leerlingen": {
             "items": [
                 {"links": [{"id": 1234}]},
                 {"links": [{"id": 5678}]},
             ]
-        }
+        },
     },
 }
 
@@ -409,9 +411,44 @@ def test_parse_lesson_documented_shape() -> None:
     assert lesson.student_ids == frozenset({1234, 5678})
 
 
+def test_parse_lesson_reads_subject_and_teacher_from_additional_objects() -> None:
+    """Subject and teacher come from ``additionalObjects`` (the real shape)."""
+    lesson = parse_lesson(LESSON_PAYLOAD)
+
+    assert lesson is not None
+    assert lesson.subject == "Wiskunde"
+    assert lesson.subject_abbr == "WI"
+    assert lesson.teacher == "JDO, AB"
+
+
+def test_parse_lesson_flat_payload_fallback() -> None:
+    """A flat payload with top-level ``vak``/``docentAfkortingen`` is tolerated."""
+    lesson = parse_lesson(
+        {
+            "vak": {"naam": "Wiskunde", "afkorting": "WI"},
+            "docentAfkortingen": "JDO",
+            "beginDatumTijd": "2026-09-12T08:30:00+02:00",
+            "eindDatumTijd": "2026-09-12T09:20:00+02:00",
+        }
+    )
+
+    assert lesson is not None
+    assert lesson.subject == "Wiskunde"
+    assert lesson.subject_abbr == "WI"
+    assert lesson.teacher == "JDO"
+
+
 def test_parse_lesson_teacher_as_string() -> None:
     """A single teacher abbreviation is tolerated as a string."""
-    lesson = parse_lesson({**LESSON_PAYLOAD, "docentAfkortingen": "JDO"})
+    lesson = parse_lesson(
+        {
+            **LESSON_PAYLOAD,
+            "additionalObjects": {
+                **LESSON_PAYLOAD["additionalObjects"],
+                "docentAfkortingen": "JDO",
+            },
+        }
+    )
 
     assert lesson is not None
     assert lesson.teacher == "JDO"

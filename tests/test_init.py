@@ -44,12 +44,14 @@ def _raw_lesson() -> dict[str, Any]:
     start = dt_util.now() + timedelta(hours=1)
     return {
         "links": [{"id": 1, "rel": "self"}],
-        "vak": {"naam": "Wiskunde", "afkorting": "WI"},
-        "docentAfkortingen": "JDO",
         "locatie": "B12",
         "beginDatumTijd": start.isoformat(),
         "eindDatumTijd": (start + timedelta(minutes=50)).isoformat(),
         "afspraakType": {"naam": "LES"},
+        "additionalObjects": {
+            "vak": {"naam": "Wiskunde", "afkorting": "WI"},
+            "docentAfkortingen": "JDO",
+        },
     }
 
 

@@ -591,6 +591,12 @@ endpoint takes `jaarWeek` where the week endpoint takes `weeknummer`.
 The two `swigemaakt` write endpoints are alternatives: `/cou` works with only
 the `swiToekenningId` when the `swigemaakt` row does not exist yet.
 
+Objects requested through `additional` come back **nested under
+`additionalObjects`** in the payload, not at the top level (e.g.
+`additionalObjects.vak`, `additionalObjects.docentAfkortingen`,
+`additionalObjects.leerlingen.items`). `models.py` reads the nested shape and
+tolerates a flat payload as a fallback.
+
 v1 fetches homework from **appointment + day + week** endpoints and merges them
 (deduplicated by `links[0].id`) so no homework type is missed.
 
@@ -631,10 +637,10 @@ This mapping is normative for the `models.py` parsers.
 | | `geboortedatum` | `geboortedatum` |
 | | `geslacht` | `geslacht` |
 | | `pasfoto` | `additionalObjects.pasfoto.datauri` |
-| `Lesson` | `id` | `id` |
-| | `subject` | `vak.naam` |
-| | `subject_abbr` | `vak.afkorting` |
-| | `teacher` | `docentAfkortingen` |
+| `Lesson` | `id` | `links[0].id` (fallback `id`) |
+| | `subject` | `additionalObjects.vak.naam` (fallback `vak.naam`) |
+| | `subject_abbr` | `additionalObjects.vak.afkorting` (fallback `vak.afkorting`) |
+| | `teacher` | `additionalObjects.docentAfkortingen` (fallback `docentAfkortingen`) |
 | | `room` | `locatie` |
 | | `start` | `beginDatumTijd` |
 | | `end` | `eindDatumTijd` |
@@ -885,7 +891,7 @@ requirements_test.txt    # Test dependencies (pytest, HA plugin, aioresponses)
 {
   "domain": "sometoday",
   "name": "SomToday",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "config_flow": true,
   "iot_class": "cloud_polling",
   "integration_type": "hub",

@@ -48,23 +48,23 @@ def _raw_lesson(
     subject: str = "Wiskunde",
 ) -> dict[str, Any]:
     """Return a raw appointment payload for the mocked API client."""
-    payload: dict[str, Any] = {
-        "links": [{"id": lesson_id, "rel": "self"}],
+    additional: dict[str, Any] = {
         "vak": {"naam": subject, "afkorting": "WI"},
         "docentAfkortingen": "JDO",
+    }
+    if student_ids is not None:
+        additional["leerlingen"] = {
+            "items": [{"links": [{"id": sid}]} for sid in student_ids]
+        }
+    return {
+        "links": [{"id": lesson_id, "rel": "self"}],
         "locatie": "B12",
         "beginDatumTijd": start.isoformat(),
         "eindDatumTijd": end.isoformat(),
         "titel": subject,
         "afspraakType": {"naam": "LES"},
+        "additionalObjects": additional,
     }
-    if student_ids is not None:
-        payload["additionalObjects"] = {
-            "leerlingen": {
-                "items": [{"links": [{"id": sid}]} for sid in student_ids]
-            }
-        }
-    return payload
 
 
 def _coordinator(

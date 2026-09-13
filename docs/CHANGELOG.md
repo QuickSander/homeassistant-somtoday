@@ -3,6 +3,25 @@
 All notable changes to the SomToday Home Assistant integration are documented
 in this file.
 
+## [0.7.2] - 2026-09-12
+
+### Fixed
+
+- **Lesson `subject` and `teacher` were never populated.** `Lesson.from_api`
+  read `vak` and `docentAfkortingen` from the top level of the appointment, but
+  SomToday returns objects requested through `additional` nested under
+  **`additionalObjects`** (`additionalObjects.vak.naam`,
+  `additionalObjects.docentAfkortingen`). `room` (`locatie`) and `lesson_id`
+  (`links`) did appear because those are base fields — which is why only
+  `subject`/`teacher` were missing on the first-lesson sensors. The parser now
+  reads the nested shape and still tolerates a flat payload as a fallback.
+- Docs: `architecture.md` §7.2/§7.3 corrected to the `additionalObjects`
+  mapping.
+- Tests: the appointment fixtures now use the real nested shape, with a
+  regression test for `additionalObjects` and one for the flat fallback.
+  Total: 271 tests, 100% line coverage, all SomToday HTTP mocked.
+- `manifest.json` bumped to `0.7.2`.
+
 ## [0.7.1] - 2026-09-12
 
 ### Added
