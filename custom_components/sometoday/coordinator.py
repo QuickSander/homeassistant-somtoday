@@ -12,7 +12,7 @@ the Home Assistant coordinator exceptions (docs/architecture.md section 5.1).
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
 import aiohttp
@@ -28,6 +28,7 @@ from homeassistant.util import dt as dt_util
 from .api import SomTodayApiClient
 from .auth import SomTodayAuth
 from .const import (
+    CONF_ENABLE_GRADES,
     CONF_SCAN_INTERVAL,
     CONF_SCHEDULE_DAYS_AHEAD,
     CONF_STUDENT_ID,
@@ -36,7 +37,7 @@ from .const import (
     DOMAIN,
 )
 from .exceptions import SomTodayError, SomtodayInvalidAuth
-from .models import Lesson, Student, parse_lessons, utcnow
+from .models import Grade, Lesson, Student, parse_grades, parse_lessons, utcnow
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ class SomTodayData:
     schedule: list[Lesson]
     students: list[Student]
     updated_at: datetime
+    grades: list[Grade] = field(default_factory=list)
 
 
 class SomTodayDataUpdateCoordinator(DataUpdateCoordinator[SomTodayData]):
@@ -82,6 +84,8 @@ class SomTodayDataUpdateCoordinator(DataUpdateCoordinator[SomTodayData]):
                 CONF_SCHEDULE_DAYS_AHEAD, DEFAULT_SCHEDULE_DAYS_AHEAD
             )
         )
+        # Grades are opt-out: the option defaults to enabled (section 3.5).
+        self._grades_enabled = bool(entry.options.get(CONF_ENABLE_GRADES, True))
         # The window the cached schedule actually covers, captured at fetch time
         # (not recomputed from "now", which would drift across midnight or after
         # a failed poll).
@@ -119,6 +123,7 @@ class SomTodayDataUpdateCoordinator(DataUpdateCoordinator[SomTodayData]):
 
             schedule = await self.async_fetch_schedule(start, end)
             students = await self._async_get_students()
+            grades = await self._async_get_grades()
         except SomtodayInvalidAuth as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except (SomTodayError, aiohttp.ClientError) as err:
@@ -132,6 +137,7 @@ class SomTodayDataUpdateCoordinator(DataUpdateCoordinator[SomTodayData]):
         return SomTodayData(
             schedule=schedule,
             students=students,
+            grades=grades,
             updated_at=utcnow(),
         )
 
@@ -175,6 +181,28 @@ class SomTodayDataUpdateCoordinator(DataUpdateCoordinator[SomTodayData]):
             _LOGGER.debug("Could not refresh the SomToday student list: %s", err)
             if self.data is not None:
                 return list(self.data.students)
+            return []
+
+    async def _async_get_grades(self) -> list[Grade]:
+        """Return the student's grades, or the previous snapshot on failure.
+
+        Grades are a secondary source: a failure here (for example a school
+        that never granted the grade permission, HTTP 403) must not take down
+        the schedule and the calendar. The previous snapshot is kept so the
+        grade sensors stay populated with the last known values. A definitive
+        auth rejection is the one exception: it must still escalate to reauth.
+        """
+        if not self._grades_enabled:
+            return []
+        try:
+            payload = await self._api.async_get_grades(self._student_id)
+            return parse_grades(payload)
+        except SomtodayInvalidAuth:
+            raise
+        except (SomTodayError, aiohttp.ClientError) as err:
+            _LOGGER.debug("Could not refresh the SomToday grades: %s", err)
+            if self.data is not None:
+                return list(self.data.grades)
             return []
 
     def _persist_rotated_token(self) -> None:

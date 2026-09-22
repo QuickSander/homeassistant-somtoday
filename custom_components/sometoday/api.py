@@ -32,6 +32,7 @@ _LOGGER = logging.getLogger(__name__)
 ACCOUNT_PATH = "/rest/v1/account/me"
 STUDENTS_PATH = "/rest/v1/leerlingen"
 APPOINTMENTS_PATH = "/rest/v1/afspraken"
+GRADES_PATH = "/rest/v1/resultaten/huidigVoorLeerling/{student_id}"
 
 # SomToday paginates list endpoints with ``Range: items=<start>-<end>`` and
 # answers ``206 Partial Content`` plus a ``Content-Range`` header. Pages are
@@ -162,6 +163,22 @@ class SomTodayApiClient:
             ("additional", "leerlingen"),
         ]
         return await self._request_paginated(APPOINTMENTS_PATH, params=params)
+
+    async def async_get_grades(
+        self, student_id: int
+    ) -> list[dict[str, Any]]:
+        """Return every grade of one student.
+
+        The endpoint is paginated like ``afspraken`` (``Range: items=...``), so
+        the same walker is reused. ``additional=toetssoortnaam`` adds the
+        human-readable test-type name. The result is intentionally not parsed
+        here; the coordinator turns it into ``Grade`` rows via ``models.py``.
+        """
+        params = [("additional", "toetssoortnaam")]
+        return await self._request_paginated(
+            GRADES_PATH.format(student_id=student_id),
+            params=params,
+        )
 
     # ------------------------------------------------------------------
     # HTTP helpers

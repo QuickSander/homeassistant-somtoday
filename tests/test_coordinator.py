@@ -19,6 +19,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.sometoday.const import (
     CONF_API_URL,
+    CONF_ENABLE_GRADES,
     CONF_REFRESH_TOKEN,
     CONF_SCAN_INTERVAL,
     CONF_SCHEDULE_DAYS_AHEAD,
@@ -32,7 +33,7 @@ from custom_components.sometoday.coordinator import (
     SomTodayDataUpdateCoordinator,
 )
 from custom_components.sometoday.exceptions import SomTodayError, SomtodayInvalidAuth
-from custom_components.sometoday.models import Student
+from custom_components.sometoday.models import Grade, Student
 
 API_URL = "https://api.somtoday.nl"
 STUDENT_ID = 1234
@@ -67,12 +68,32 @@ def _raw_lesson(
     }
 
 
+def _raw_grade(
+    grade_id: int,
+    *,
+    subject: str = "Wiskunde",
+    result: str = "7.9",
+) -> dict[str, Any]:
+    """Return a raw grade payload for the mocked API client."""
+    return {
+        "links": [{"id": grade_id, "rel": "self"}],
+        "resultaat": result,
+        "geldendResultaat": result,
+        "datumInvoer": "2026-09-01T10:00:00+02:00",
+        "teltNietmee": False,
+        "toetsNietGemaakt": False,
+        "type": "Toetskolom",
+        "vak": {"naam": subject, "afkorting": "WI"},
+    }
+
+
 def _coordinator(
     hass: Any,
     *,
     options: dict[str, Any] | None = None,
     appointments: list[dict[str, Any]] | None = None,
     students: list[Student] | None = None,
+    grades: list[dict[str, Any]] | None = None,
     entry_data: dict[str, Any] | None = None,
 ) -> tuple[SomTodayDataUpdateCoordinator, MockConfigEntry, Any, Any]:
     """Build a coordinator around mocked API and auth objects."""
@@ -96,6 +117,7 @@ def _coordinator(
     api = MagicMock()
     api.async_get_appointments = AsyncMock(return_value=appointments or [])
     api.async_get_students = AsyncMock(return_value=students or [])
+    api.async_get_grades = AsyncMock(return_value=grades or [])
 
     coordinator = SomTodayDataUpdateCoordinator(hass, entry, api, auth)
     return coordinator, entry, api, auth
@@ -256,6 +278,94 @@ async def test_update_data_students_failure_without_snapshot(hass: Any) -> None:
     data = await coordinator._async_update_data()
 
     assert data.students == []
+
+
+async def test_update_data_fetches_and_parses_grades(hass: Any) -> None:
+    """A successful poll parses the grade payload into the snapshot."""
+    coordinator, _, api, _ = _coordinator(
+        hass, grades=[_raw_grade(1), _raw_grade(2, subject="Scheikunde")]
+    )
+
+    data = await coordinator._async_update_data()
+
+    api.async_get_grades.assert_awaited_once_with(STUDENT_ID)
+    assert [grade.subject for grade in data.grades] == ["Wiskunde", "Scheikunde"]
+    assert data.grades[0].value == 7.9
+
+
+async def test_update_data_skips_grades_when_disabled(hass: Any) -> None:
+    """The enable_grades option turns the grades fetch off entirely."""
+    coordinator, _, api, _ = _coordinator(
+        hass, options={CONF_ENABLE_GRADES: False}, grades=[_raw_grade(1)]
+    )
+
+    data = await coordinator._async_update_data()
+
+    api.async_get_grades.assert_not_awaited()
+    assert data.grades == []
+
+
+async def test_update_data_keeps_previous_grades_on_failure(hass: Any) -> None:
+    """A failing grades fetch keeps the previous snapshot (non-fatal)."""
+    previous = Grade(
+        id="1",
+        result=7.9,
+        valid_result=7.9,
+        date=None,
+        counts=True,
+        type="Toetskolom",
+        subject="Wiskunde",
+        subject_abbr="WI",
+    )
+    coordinator, _, api, _ = _coordinator(hass, students=[])
+    coordinator.data = SomTodayData(
+        schedule=[],
+        students=[],
+        grades=[previous],
+        updated_at=dt_util.utcnow(),
+    )
+    api.async_get_grades.side_effect = SomTodayError("grades down")
+
+    data = await coordinator._async_update_data()
+
+    assert data.grades == [previous]
+
+
+async def test_update_data_grades_failure_without_snapshot(hass: Any) -> None:
+    """A failing grades fetch without a snapshot yields an empty list."""
+    coordinator, _, api, _ = _coordinator(hass)
+    api.async_get_grades.side_effect = SomTodayError("grades down")
+
+    data = await coordinator._async_update_data()
+
+    assert data.grades == []
+
+
+async def test_update_data_grades_invalid_auth_escalates(hass: Any) -> None:
+    """A definitive rejection while reading grades still triggers reauth."""
+    coordinator, _, api, _ = _coordinator(hass)
+    api.async_get_grades = AsyncMock(
+        side_effect=SomtodayInvalidAuth("session dead")
+    )
+
+    with pytest.raises(ConfigEntryAuthFailed):
+        await coordinator._async_update_data()
+
+
+async def test_update_data_grades_failure_does_not_fail_the_poll(hass: Any) -> None:
+    """A grade-permission failure leaves the schedule available (non-fatal)."""
+    raw = _raw_lesson(
+        1,
+        datetime(2026, 9, 12, 8, 30, tzinfo=UTC),
+        datetime(2026, 9, 12, 9, 20, tzinfo=UTC),
+    )
+    coordinator, _, api, _ = _coordinator(hass, appointments=[raw])
+    api.async_get_grades.side_effect = SomTodayError("no grade permission")
+
+    data = await coordinator._async_update_data()
+
+    assert [lesson.id for lesson in data.schedule] == ["1"]
+    assert data.grades == []
 
 
 async def test_async_fetch_schedule_filters_and_sorts(hass: Any) -> None:

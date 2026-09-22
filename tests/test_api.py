@@ -15,6 +15,7 @@ import pytest
 
 from custom_components.sometoday.api import (
     APPOINTMENTS_PATH,
+    GRADES_PATH,
     SomTodayApiClient,
     _release,
 )
@@ -836,3 +837,116 @@ async def test_get_appointments_403_is_retryable(
         await api.async_get_appointments(date(2026, 9, 11), date(2026, 9, 25))
 
     assert not isinstance(err.value, SomtodayInvalidAuth)
+
+
+# ---------------------------------------------------------------------------
+# async_get_grades (paginated /rest/v1/resultaten/huidigVoorLeerling/{id})
+# ---------------------------------------------------------------------------
+def _grade(grade_id: int) -> dict[str, Any]:
+    """Return a minimal grade payload."""
+    return {"links": [{"id": grade_id}]}
+
+
+async def test_get_grades_url_params_and_range(
+    fake_session: Any, fake_response: Any
+) -> None:
+    """The grades endpoint is called with the student path and a Range header."""
+    session = fake_session(
+        [fake_response(200, json_data={"items": [_grade(1)]})]
+    )
+    api, _ = _client(session)
+
+    grades = await api.async_get_grades(1234)
+
+    assert grades == [_grade(1)]
+    assert len(session.calls) == 1
+    method, url, kwargs = session.calls[0]
+    assert method == "GET"
+    assert url == f"{API_URL}{GRADES_PATH.format(student_id=1234)}"
+    assert kwargs["params"] == [("additional", "toetssoortnaam")]
+    assert kwargs["headers"]["Range"] == "items=0-99"
+    assert kwargs["headers"]["Authorization"] == "Bearer access"
+
+
+async def test_get_grades_paginates_two_pages(
+    fake_session: Any, fake_response: Any
+) -> None:
+    """A 206 page with more items triggers a second, merged request."""
+    first_page = [_grade(index) for index in range(100)]
+    second_page = [_grade(index) for index in range(100, 150)]
+    session = fake_session(
+        [
+            fake_response(
+                206,
+                headers={"Content-Range": "items 0-99/150"},
+                json_data={"items": first_page},
+            ),
+            fake_response(
+                206,
+                headers={"Content-Range": "items 100-149/150"},
+                json_data={"items": second_page},
+            ),
+        ]
+    )
+    api, _ = _client(session)
+
+    grades = await api.async_get_grades(1234)
+
+    assert len(grades) == 150
+    assert len(session.calls) == 2
+    assert session.calls[1][2]["headers"]["Range"] == "items=100-199"
+
+
+async def test_get_grades_empty(fake_session: Any, fake_response: Any) -> None:
+    """An empty page yields no grades."""
+    session = fake_session([fake_response(200, json_data={"items": []})])
+    api, _ = _client(session)
+
+    assert await api.async_get_grades(1234) == []
+
+
+async def test_get_grades_403_is_retryable(
+    fake_session: Any, fake_response: Any
+) -> None:
+    """A 403 (no grade permission) is retryable, not a dead session."""
+    session = fake_session([fake_response(403)])
+    api, _ = _client(session)
+
+    with pytest.raises(SomTodayApiError) as err:
+        await api.async_get_grades(1234)
+
+    assert not isinstance(err.value, SomtodayInvalidAuth)
+
+
+async def test_get_grades_error_status(
+    fake_session: Any, fake_response: Any
+) -> None:
+    """A 5xx page maps to SomTodayApiError."""
+    session = fake_session([fake_response(500, text="oops")])
+    api, _ = _client(session)
+
+    with pytest.raises(SomTodayApiError):
+        await api.async_get_grades(1234)
+
+
+async def test_get_grades_401_refreshes_and_retries(
+    fake_session: Any, fake_response: Any
+) -> None:
+    """A 401 on the first page triggers one refresh and a retry."""
+    session = fake_session(
+        [
+            fake_response(401),
+            fake_response(200, json_data={"items": [_grade(1)]}),
+        ]
+    )
+    api, auth = _client(session)
+
+    async def _refresh() -> SomTodayTokens:
+        auth.tokens = _tokens()
+        return auth.tokens
+
+    with patch.object(auth, "async_refresh", side_effect=_refresh):
+        grades = await api.async_get_grades(1234)
+
+    assert grades == [_grade(1)]
+    assert len(session.calls) == 2

@@ -89,20 +89,26 @@ async def _noop_ensure_valid(self: SomTodayAuth) -> None:
 
 @contextmanager
 def _patched_appointments() -> Iterator[None]:
-    """Patch the schedule endpoint so the coordinator refresh is offline."""
+    """Patch the schedule and grades endpoints so a refresh is offline."""
 
     async def _appointments(self: SomTodayApiClient, start: Any, end: Any) -> list[Any]:
         return []
 
-    with patch.object(
-        SomTodayApiClient, "async_get_appointments", new=_appointments
+    async def _grades(self: SomTodayApiClient, student_id: Any) -> list[Any]:
+        return []
+
+    with (
+        patch.object(
+            SomTodayApiClient, "async_get_appointments", new=_appointments
+        ),
+        patch.object(SomTodayApiClient, "async_get_grades", new=_grades),
     ):
         yield
 
 
 @contextmanager
 def _patched_data() -> Iterator[None]:
-    """Patch both coordinator endpoints so a setup never touches the network."""
+    """Patch all coordinator endpoints so a setup never touches the network."""
 
     async def _appointments(self: SomTodayApiClient, start: Any, end: Any) -> list[Any]:
         return []
@@ -110,11 +116,15 @@ def _patched_data() -> Iterator[None]:
     async def _students(self: SomTodayApiClient) -> list[Student]:
         return []
 
+    async def _grades(self: SomTodayApiClient, student_id: Any) -> list[Any]:
+        return []
+
     with (
         patch.object(
             SomTodayApiClient, "async_get_appointments", new=_appointments
         ),
         patch.object(SomTodayApiClient, "async_get_students", new=_students),
+        patch.object(SomTodayApiClient, "async_get_grades", new=_grades),
     ):
         yield
 

@@ -77,9 +77,10 @@ def _patched_setup(
     *,
     appointments: list[dict[str, Any]] | None = None,
     students: list[Student] | None = None,
+    grades: list[dict[str, Any]] | None = None,
     schedule_error: Exception | None = None,
 ) -> Iterator[None]:
-    """Patch auth and the two coordinator endpoints."""
+    """Patch auth and the coordinator endpoints."""
 
     async def _ensure_valid(self: SomTodayAuth) -> None:
         return None
@@ -94,12 +95,18 @@ def _patched_setup(
     async def _students(self: SomTodayApiClient) -> list[Student]:
         return list(students or [])
 
+    async def _grades(
+        self: SomTodayApiClient, student_id: Any
+    ) -> list[dict[str, Any]]:
+        return list(grades or [])
+
     with (
         patch.object(SomTodayAuth, "async_ensure_valid", new=_ensure_valid),
         patch.object(
             SomTodayApiClient, "async_get_appointments", new=_appointments
         ),
         patch.object(SomTodayApiClient, "async_get_students", new=_students),
+        patch.object(SomTodayApiClient, "async_get_grades", new=_grades),
     ):
         yield
 
@@ -120,7 +127,7 @@ async def test_setup_entry_creates_coordinator_and_entities(hass: Any) -> None:
     assert isinstance(coordinator, SomTodayDataUpdateCoordinator)
     assert [lesson.id for lesson in coordinator.data.schedule] == ["1"]
     assert len(hass.states.async_entity_ids("calendar")) == 1
-    assert len(hass.states.async_entity_ids("sensor")) == 2
+    assert len(hass.states.async_entity_ids("sensor")) == 5
 
 
 async def test_setup_entry_schedule_failure_is_retryable(hass: Any) -> None:
@@ -156,7 +163,7 @@ async def test_unload_entry_unloads_platforms(hass: Any) -> None:
             *hass.states.async_entity_ids("calendar"),
             *hass.states.async_entity_ids("sensor"),
         ]
-        assert len(entity_ids) == 3
+        assert len(entity_ids) == 6
 
         assert await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()

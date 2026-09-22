@@ -76,6 +76,15 @@
       },
       "first_lesson_of_tomorrow": {
         "name": "Eerste les morgen"
+      },
+      "average_grade": {
+        "name": "Gemiddeld cijfer"
+      },
+      "latest_grade": {
+        "name": "Laatste cijfer"
+      },
+      "grades_count": {
+        "name": "Aantal cijfers"
       }
     }
   }

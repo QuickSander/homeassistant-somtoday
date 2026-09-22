@@ -4,12 +4,14 @@ A Home Assistant custom component that logs in to [SomToday](https://www.somtoda
 and (eventually) exposes a student's schedule, homework, grades and absence as
 Home Assistant entities.
 
-> **Current status: authentication, schedule and the first lesson sensors
-> (v0.7.0).** This release installs, authenticates against SomToday, exposes the
-> student's **timetable as a read-only `calendar` entity**, and adds
-> **`first_lesson_of_today`** and **`first_lesson_of_tomorrow`** timestamp
-> sensors (useful for driving an alarm). Grades, homework, absence and the
-> remaining sensor/binary_sensor entities land in later releases.
+> **Current status: authentication, schedule and grades (v0.8.0).** This release
+> installs, authenticates against SomToday, exposes the student's **timetable as
+> a read-only `calendar` entity**, adds **`first_lesson_of_today`** and
+> **`first_lesson_of_tomorrow`** timestamp sensors (useful for driving an
+> alarm), and adds the grade sensors **`average_grade`** (with a per-subject
+> breakdown), **`latest_grade`** (tagged with its subject) and
+> **`grades_count`**. Homework, absence and the remaining sensor/binary_sensor
+> entities land in later releases.
 
 ## Requirements
 
@@ -90,9 +92,11 @@ After setup you can open **Configure** on the integration to change:
 | `enable_homework` | on | Fetch homework. |
 | `enable_absence` | on | Fetch absence. |
 
-> The `scan_interval` and `schedule_days_ahead` options affect the coordinator
-> and the calendar immediately (the entry reloads when you save). The
-> homework/grades/absence toggles take effect once those entities are added.
+> The `scan_interval`, `schedule_days_ahead` and `enable_grades` options affect
+> the coordinator immediately (the entry reloads when you save). Turning
+> `enable_grades` off stops the grades request and leaves the grade sensors
+> `unknown`. The homework/absence toggles take effect once those entities are
+> added.
 
 ### Entities
 
@@ -103,6 +107,9 @@ One device is created per student, with these entities:
 | `calendar.<student>` | calendar | The student's timetable (read-only). |
 | `sensor.<student>_first_lesson_of_today` | sensor (timestamp) | Start of the first lesson today; `unknown` on a free day. |
 | `sensor.<student>_first_lesson_of_tomorrow` | sensor (timestamp) | Start of the first lesson tomorrow; `unknown` if there is none. |
+| `sensor.<student>_average_grade` | sensor (measurement) | Mean of the counting grades; per-subject means in the `averages` attribute. |
+| `sensor.<student>_latest_grade` | sensor (measurement) | Most recently entered grade; the `subject` attribute says which subject it was for. |
+| `sensor.<student>_grades_count` | sensor (measurement) | Number of counting grades. |
 
 The `first_lesson_of_today`/`first_lesson_of_tomorrow` sensors expose the
 lesson's details as attributes (missing values are omitted), and are designed to
@@ -138,6 +145,33 @@ automation:
                 First lesson {{ state_attr('sensor.somtoday_eli_saado_first_lesson_of_today', 'subject') }}
                 at {{ as_timestamp(states('sensor.somtoday_eli_saado_first_lesson_of_today')) | timestamp_custom('%H:%M') }}
 ```
+
+### Grades
+
+`average_grade` is the mean over all **counting** grades (SomToday's own average
+rows, grades marked `teltNietmee` and tests that were not made are ignored).
+Because the average is most useful **per subject**, its attributes contain a
+per-subject breakdown:
+
+| Attribute (`sensor.<student>_average_grade`) | Type | Meaning |
+|----------------------------------------------|------|---------|
+| `averages` | mapping | Mean grade per subject, e.g. `{Wiskunde: 7.5, Scheikunde: 6.0}`. |
+| `grades` | mapping | The newest grade per subject. |
+| `grades_raw` | list | The underlying grades (subject, value, type, date), truncated. |
+
+`latest_grade` is the most recently entered grade and always says **which
+subject** it was for:
+
+| Attribute (`sensor.<student>_latest_grade`) | Type | Meaning |
+|---------------------------------------------|------|---------|
+| `subject` | string | Subject name the grade was for (falls back to the abbreviation). |
+| `subject_abbr` | string | Subject abbreviation. |
+| `date` | timestamp | When the grade was entered. |
+| `type` | string | Grade column type (e.g. `Toetskolom`). |
+| `counts` | bool | Whether the grade counts towards the average. |
+
+`grades_count` is simply the number of counting grades. All three sensors are
+`unknown` when the account has no grades (or grades are disabled).
 
 ## Testing the authorization
 

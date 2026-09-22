@@ -3,6 +3,41 @@
 All notable changes to the SomToday Home Assistant integration are documented
 in this file.
 
+## [0.8.0] - 2026-09-13
+
+### Added
+
+- **Grades.** The integration now reads the student's grades from
+  `/rest/v1/resultaten/huidigVoorLeerling/{id}` (paginated with
+  `Range: items=0-99`) and exposes them as three sensors:
+  - **`average_grade`** — the mean over all counting grades, with a
+    **per-subject** breakdown in the `averages: {subject: mean}` attribute (plus
+    `grades: {subject: latest}` and the truncated `grades_raw` list).
+  - **`latest_grade`** — the most recently entered grade, with the **subject**
+    (and subject abbreviation) it was for, plus its date and type.
+  - **`grades_count`** — the number of counting grades.
+- `Grade`/`parse_grades` in `models.py`: numeric strings (`"7.9"`) and decimal
+  commas are coerced to `float`; non-numeric grades (`"V"`, `""`) become `None`.
+  SomToday's own average columns (`type` ending in `GemiddeldeKolom`) are
+  flagged and excluded so grades are never averaged with averages.
+- `SomTodayApiClient.async_get_grades(student_id)` reuses the `Range`
+  pagination walker.
+- The `enable_grades` option (default on) is now honoured. A grades failure is
+  **non-fatal**: the previous snapshot is kept and the schedule/calendar stay
+  available; only a definitive auth rejection triggers reauth.
+
+### Changed
+
+- `SomTodayData` gains a `grades` field; the coordinator parses and scopes the
+  grades per student.
+- Translations (`strings.json`, `en.json`, `nl.json`) add the three sensor
+  names.
+- Docs: `architecture.md` §2/§5/§7.2/§7.3/§8.1/§13 updated for the grades slice;
+  README sensor section expanded.
+- `manifest.json` bumped to `0.8.0`.
+- Tests: `Grade`/`parse_grades`, `async_get_grades`, the coordinator grades
+  paths and the three grade sensors. Total: 313 tests, 100% line coverage.
+
 ## [0.7.2] - 2026-09-12
 
 ### Fixed

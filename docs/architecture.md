@@ -111,12 +111,13 @@ framework:
 
 - `ConfigFlow` + `OptionsFlow` for configuration (`config_flow.py`).
 - `DataUpdateCoordinator` polling every **15 minutes** by default
-  (`coordinator.py`) — implemented for the schedule; grades/homework/absence
-  extend it in later slices.
+  (`coordinator.py`) — implemented for the schedule and grades; homework and
+  absence extend it in later slices.
 - An OO API client with an **injectable `aiohttp.ClientSession`** (`api.py`).
-- Platforms: `calendar` and `sensor` (the `first_lesson_of_today` and
-  `first_lesson_of_tomorrow` sensors) are implemented; the remaining `sensor`
-  entities and `binary_sensor` come later.
+- Platforms: `calendar` and `sensor` are implemented. The `sensor` platform
+  ships the `first_lesson_of_today`/`first_lesson_of_tomorrow` timestamps and
+  the `average_grade`/`latest_grade`/`grades_count` sensors; the remaining
+  `sensor` entities and `binary_sensor` come later.
 - All parsing isolated in a typed model layer (`models.py`) so entities never
   touch raw JSON.
 
@@ -212,7 +213,7 @@ SomTodayApiClient
   + async_get_account() -> Account
   + async_get_students() -> list[Student]
   + async_get_appointments(start, end) -> list[dict]   # schedule (implemented)
-  + async_get_grades(student_id) -> list[Grade]     # future work
+  + async_get_grades(student_id) -> list[dict]      # grades (implemented)
   + async_get_homework(since) -> list[HomeworkItem] # future work
   + async_get_absence(start, end) -> list[Absence]  # future work
   + async_get_subjects() -> list[Subject]           # future work
@@ -222,10 +223,10 @@ SomTodayApiClient
 SomTodayDataUpdateCoordinator(DataUpdateCoordinator[SomTodayData])  # schedule implemented
   + _async_update_data() -> SomTodayData
 
-SomTodayData (dataclass)                             # schedule implemented
+SomTodayData (dataclass)                        # schedule + grades implemented
   + students: list[Student]
   + schedule: list[Lesson]
-  + grades: list[Grade]                              # future work
+  + grades: list[Grade]                              # grades (implemented)
   + homework: list[HomeworkItem]                     # future work
   + absence: list[Absence]                           # future work
   + subjects: dict[str, Subject]                     # future work
@@ -453,10 +454,11 @@ authorize-URL step and the paste/DevTools instructions are localised here.
 
 ## 5. DataUpdateCoordinator
 
-> **Implemented for the schedule slice (v0.5.0).** The coordinator polls
-> `/rest/v1/afspraken` for the entry's student and exposes
-> `SomTodayData(schedule, students, updated_at)`; grades/homework/absence are
-> added to the same coordinator in later slices.
+> **Implemented for the schedule (v0.5.0) and grades (v0.8.0) slices.** The
+> coordinator polls `/rest/v1/afspraken` and
+> `/rest/v1/resultaten/huidigVoorLeerling/{id}` for the entry's student and
+> exposes `SomTodayData(schedule, students, grades, updated_at)`; homework and
+> absence are added to the same coordinator in later slices.
 
 ```text
 SomTodayDataUpdateCoordinator(DataUpdateCoordinator[SomTodayData])
@@ -469,7 +471,7 @@ SomTodayDataUpdateCoordinator(DataUpdateCoordinator[SomTodayData])
           data = SomTodayData(
               students = students,
               schedule = await self._api.async_get_schedule(today-1, today+N),  # filter per student
-              grades   = await self._api.async_get_grades(self._student_id) if enabled,
+              grades   = await self._async_get_grades() if grades_enabled,  # non-fatal
               homework = await self._api.async_get_homework(today-1, self._student_id) if enabled,
               absence  = await self._api.async_get_absence(week_start, today) if enabled,
               subjects = await self._api.async_get_subjects(),
@@ -490,11 +492,20 @@ SomTodayDataUpdateCoordinator(DataUpdateCoordinator[SomTodayData])
   `async_setup_entry`; failure aborts setup with the standard HA behaviour.
 - **Serialisation:** a single `asyncio.Lock` prevents overlapping refresh + token
   rotation.
-- **Cross-poll state:** `new_grade` (see [§8.2](#82-binary_sensor-platform))
-  cannot be derived from a single response. The coordinator keeps
-  `self._last_grade_ids: set` across polls and populates
+- **Grades are opt-out and non-fatal (v0.8.0):** `enable_grades` (default
+  `True`) turns the grades fetch off; `_async_get_grades()` returns `[]` then.
+  Unlike the schedule, a grades failure is **not** fatal: a `SomTodayError` or
+  network error (for example a school that never granted the grade permission,
+  HTTP 403) is logged at debug level and the previous snapshot is kept, so the
+  schedule and calendar stay available. A `SomtodayInvalidAuth` still escalates
+  to `ConfigEntryAuthFailed` (reauth).
+- **Cross-poll state (future):** `new_grade` (see
+  [§8.2](#82-binary_sensor-platform)) cannot be derived from a single response.
+  When the `binary_sensor` platform lands, the coordinator will keep
+  `self._last_grade_ids: set` across polls and populate
   `SomTodayData.new_grades` with the grades whose IDs were not seen in the
-  previous poll.
+  previous poll (with a first-poll baseline so startup does not flag every
+  grade as new).
 
 ### 5.1 Error mapping
 
@@ -570,7 +581,7 @@ removed Feb 2025). The form-scraping POSTs (`0-1.-panel-signInForm`,
 | GET | `/rest/v1/leerlingen` | Current student(s) | `additional=pasfoto` |
 | GET | `/rest/v1/leerlingen/{id}` | Student detail | — |
 | GET | `/rest/v1/afspraken` | Schedule | `sort=asc-id`, `additional=vak`, `additional=docentAfkortingen`, `additional=leerlingen`, `begindatum=YYYY-MM-DD`, `einddatum=YYYY-MM-DD` |
-| GET | `/rest/v1/resultaten/huidigVoorLeerling/{id}` | Grades (paginated) | `Range: items=0-99` |
+| GET | `/rest/v1/resultaten/huidigVoorLeerling/{id}` | Grades (paginated) | `Range: items=0-99`, `additional=toetssoortnaam` |
 | GET | `/rest/v1/studiewijzeritemafspraaktoekenningen` | Homework linked to appointments | `begintNaOfOp=YYYY-MM-DD`, `geenDifferentiatieOfGedifferentieerdVoorLeerling`, `additional`, `jaarWeek` |
 | GET | `/rest/v1/studiewijzeritemdagtoekenningen` | Homework per day | `begintNaOfOp`, `geenDifferentiatieOfGedifferentieerdVoorLeerling`, `additional` |
 | GET | `/rest/v1/studiewijzeritemweektoekenningen` | Homework per week | `begintNaOfOp`, `geenDifferentiatieOfGedifferentieerdVoorLeerling`, `additional`, `weeknummer` |
@@ -646,13 +657,15 @@ This mapping is normative for the `models.py` parsers.
 | | `end` | `eindDatumTijd` |
 | | `title` | `titel` |
 | | `type` | `afspraakType.naam` |
-| `Grade` | `id` | `id` |
-| | `result` | `resultaat` (float) |
-| | `valid_result` | `geldendResultaat` |
+| `Grade` | `id` | `links[0].id` (fallback `id`) |
+| | `result` | `resultaat` (numeric string → `float`, else `None`) |
+| | `valid_result` | `geldendResultaat` (numeric string → `float`, else `None`) |
 | | `date` | `datumInvoer` |
 | | `counts` | `not teltNietmee` |
 | | `type` | `type` |
-| | `subject` | `vak.naam` |
+| | `subject` | `vak.naam` (fallback `additionalObjects.vak.naam`) |
+| | `subject_abbr` | `vak.afkorting` (fallback `additionalObjects.vak.afkorting`) |
+| | `not_made` | `toetsNietGemaakt` |
 | `HomeworkItem` | `id` | `links[0].id` |
 | | `topic` | `studiewijzerItem.onderwerp` |
 | | `kind` | `studiewijzerItem.huiswerkType` |
@@ -669,16 +682,23 @@ This mapping is normative for the `models.py` parsers.
 | | `abbr` | `afkorting` |
 | | `name` | `naam` |
 
+`Grade.is_average_column` is `True` when SomToday returns one of its **own**
+averages as a row (`type` ending in `GemiddeldeKolom`, e.g.
+`ToetssoortGemiddeldeKolom`). The integration excludes those rows when it
+computes its own per-subject average, so grades are never averaged with
+averages.
+
 `HomeworkItem.kind` takes the `studiewijzerItem.huiswerkType` values
 `HUISWERK`, `TOETS` and `GROTE_TOETS`. It lets the homework-due sensors and the
 calendar distinguish homework from tests (see [§8](#8-entity-model)).
 
 ## 8. Entity model
 
-> **Partly implemented (v0.6.0).** The read-only `calendar` entity and the
-> `first_lesson_of_today` sensor are implemented; the rest of the `sensor` table
-> and the `binary_sensor` platform are later slices, but the device/identity
-> rules already apply.
+> **Partly implemented (v0.8.0).** The read-only `calendar` entity, the
+> `first_lesson_of_today`/`first_lesson_of_tomorrow` sensors and the grade
+> sensors (`average_grade`, `latest_grade`, `grades_count`) are implemented; the
+> remaining `sensor` rows and the `binary_sensor` platform are later slices, but
+> the device/identity rules already apply.
 
 One **device per config entry** (per student). All entities set
 `_attr_has_entity_name = True`, use translation keys, and share:
@@ -699,9 +719,10 @@ Unique IDs: `f"{entry.entry_id}_{key}"`. Availability follows
 
 ### 8.1 `sensor` platform
 
-> **Partly implemented (v0.7.0).** `first_lesson_of_today` and
-> `first_lesson_of_tomorrow` are implemented; the remaining rows are later
-> slices.
+> **Partly implemented (v0.8.0).** `first_lesson_of_today`,
+> `first_lesson_of_tomorrow`, `average_grade`, `latest_grade` and `grades_count`
+> are implemented; the remaining rows (schedule extras, homework, absence) are
+> later slices.
 
 | Key | Translation key | Device class | State class | State |
 |-----|-----------------|--------------|-------------|-------|
@@ -715,9 +736,9 @@ Unique IDs: `f"{entry.entry_id}_{key}"`. Availability follows
 | `homework_open` | `homework_open` | — | `MEASUREMENT` | Open homework items |
 | `homework_due_today` | `homework_due_today` | — | `MEASUREMENT` | Homework due today |
 | `homework_next` | `homework_next` | `TIMESTAMP` | — | Due moment of the nearest open homework |
-| `average_grade` | `average_grade` | — | `MEASUREMENT` | Mean of valid grades |
+| `average_grade` | `average_grade` | — | `MEASUREMENT` | Mean of the counting grades (`None` when there are none) |
 | `latest_grade` | `latest_grade` | — | `MEASUREMENT` | Most recently entered grade |
-| `grades_count` | `grades_count` | — | `MEASUREMENT` | Number of grades in the period |
+| `grades_count` | `grades_count` | — | `MEASUREMENT` | Number of counting grades |
 | `absence_recent` | `absence_recent` | — | `MEASUREMENT` | Unauthorised absence records this week |
 
 `first_lesson_of_today` and `first_lesson_of_tomorrow` drive an alarm clock:
@@ -729,9 +750,22 @@ still counts), and each exposes the lesson's `subject`, `room`, `teacher`,
 `None` when there is no lesson on that day. Both share one entity base so the
 day offset and count attribute are the only differences.
 
-Grade sensors expose per-subject grades as **attributes** (`grades: {subject:
-grade}`) and the raw list as `grades_raw` (truncated), so users can build
-templates without dozens of entities.
+Grade sensors expose per-subject detail as **attributes** so users can build
+templates without dozens of entities:
+
+- `average_grade` — state is the mean over all **counting** grades (rounded to
+  one decimal), and the per-subject means are the `averages: {subject: mean}`
+  attribute. It also carries `grades: {subject: latest_grade}` and the truncated
+  raw list `grades_raw`.
+- `latest_grade` — state is the most recently entered grade and the attributes
+  include `subject` and `subject_abbr` (which vak the grade was for), plus
+  `date`, `type` and `counts`.
+- `grades_count` — the number of counting grades.
+
+A grade **counts** when `teltNietmee` is false, `toetsNietGemaakt` is false, the
+row is not one of SomToday's own average columns and the value is numeric. The
+overall mean and the per-subject means are computed from the same filtered set;
+subjects are grouped by `subject` (falling back to `subject_abbr`).
 
 ### 8.2 `binary_sensor` platform
 
@@ -944,15 +978,23 @@ session. `version` is mandatory for custom components.
   (`grant_type=authorization_code`, `code_verifier`, `client_id`) and the
   `invalid_grant` vs retryable distinction; `async_refresh_tokens()` tests
   assert rotation preservation when the response omits the refresh token.
-- Coordinator tests (schedule slice implemented) cover: successful update,
-  per-student filtering, the fetch window, `SomtodayInvalidAuth` →
+- Coordinator tests (schedule and grades slices implemented) cover: successful
+  update, per-student filtering, the fetch window, `SomtodayInvalidAuth` →
   `ConfigEntryAuthFailed`, `SomTodayError` → `UpdateFailed`, rotated-token
-  persistence, and mixed naive/aware timestamp handling.
+  persistence, mixed naive/aware timestamp handling, grades parsing, the
+  `enable_grades` opt-out, and the non-fatal grades failure path (previous
+  snapshot kept, schedule unaffected).
+- Grade model tests cover the documented payload, the nested/flat `vak` shapes,
+  numeric-string and decimal-comma coercion, non-numeric and empty grades,
+  `teltNietmee`, `toetsNietGemaakt` and the average-column detection.
+  `async_get_grades` tests cover the URL/params/`Range` header, pagination and
+  error mapping.
 - Calendar tests cover `event` (current/next), `async_get_events` from the cache
   and out-of-range fetch, tz-aware event mapping, read-only, and entity
-  metadata. Sensor tests cover `first_lesson_of_today` and
-  `first_lesson_of_tomorrow` (state, attributes, timezone, availability,
-  setup); `binary_sensor` tests are still future work.
+  metadata. Sensor tests cover the first-lesson sensors and the grade sensors
+  (`average_grade` overall + per-subject, `latest_grade` with its subject,
+  `grades_count`, exclusions, timezone, availability, setup); `binary_sensor`
+  tests are still future work.
 
 ## 14. Corrections to the previous draft
 

@@ -1,4 +1,65 @@
-# Review — SomToday v0.6.0 `first_lesson_of_today` sensor slice
+# Review — SomToday v0.8.0 grades slice
+
+> Reviewer: reviewer-agent (per `AGENTS.md`).
+> Date: 2026-09-13.
+> Scope: the **v0.8.0 grades slice** — `models.py` (`Grade`, `_as_float`,
+> `parse_grade(s)`), `api.py` (`async_get_grades`, `GRADES_PATH`),
+> `coordinator.py` (`SomTodayData.grades`, `_async_get_grades`,
+> `enable_grades`), `sensor.py` (the three grade sensors),
+> `manifest.json` 0.8.0, `strings.json` + `translations/{en,nl}.json`, and the
+> new tests in `tests/{test_models,test_api,test_coordinator,test_sensor}.py`.
+> The previously approved v0.3.0 (auth), v0.4.0 (identity) and v0.5.0/v0.6.0/
+> v0.7.0 slices are re-run but not re-reviewed in depth.
+> Sources of truth: `docs/architecture.md` §2/§5/§6/§7.2/§7.3/§8.1/§13 and
+> `docs/test-report.md`.
+> Method: independent re-read of every in-scope file; independent re-run of the
+> suite, coverage and lint; source inspection of the installed Home Assistant
+> 2026.9.1 framework; and a read-through of the upstream
+> `somtoday-api-docs` payload for
+> `GET /rest/v1/resultaten/huidigVoorLeerling/{id}`. **No production code was
+> modified. No real SomToday API call was made.**
+
+Commands reproduced independently:
+
+```sh
+V=/var/folders/my/41d2j1d50dg5sc8d603280x40000gn/T/opencode/sometoday-venv/bin
+$V/python -m pytest tests/ -q --cov=custom_components.sometoday --cov-branch \
+  --cov-report=term-missing
+$V/python -m ruff check custom_components tests
+```
+
+Observed: **313 passed, 0 failed, 0 xfailed, 0 skipped**; line coverage **100%**
+(1199 statements, 0 missed); branch coverage **99%** (318 branches, 10 partial,
+all pre-existing diagnostic guards); `models.py`, `coordinator.py` 100% line/
+branch; `sensor.py` 100% line / 97% branch; `ruff` **clean** (exit 0).
+
+## Verdict
+
+**Approve — ready to tag/release.**
+
+- **Requirements met.** The two explicit requirements are implemented and
+  tested: the average is broken down **per subject** (`average_grade`'s
+  `averages: {subject: mean}` attribute) and `latest_grade` reports the
+  **subject** it was for (`subject`/`subject_abbr` attributes).
+- **Correctness.** SomToday's own average columns (`*GemiddeldeKolom`),
+  `teltNietmee`, `toetsNietGemaakt` and non-numeric grades (`"V"`, `""`) are all
+  excluded before averaging, so the integration never averages averages. Subject
+  parsing tolerates both the top-level `vak` and the nested
+  `additionalObjects.vak` shape.
+- **Resilience.** The grades fetch is non-fatal: a `SomTodayError`/network
+  error (e.g. HTTP 403 without grade permission) keeps the previous snapshot and
+  leaves the schedule/calendar available; a `SomtodayInvalidAuth` still
+  escalates to reauth. The `enable_grades` option is honoured.
+- **Security.** No new secrets; only the bearer token already in use. No grade
+  data is logged.
+- **No blocking issues.** Non-blocking observations only: the `sensor.py`
+  branch coverage is 97% (defensive `value is None` guards, line coverage 100%),
+  and `new_grade` remains explicitly deferred to the `binary_sensor` slice
+  (§8.2).
+
+---
+
+# Historical review — v0.6.0 `first_lesson_of_today` sensor slice
 
 > Reviewer: reviewer-agent (per `AGENTS.md`).
 > Date: 2026-09-12.

@@ -76,6 +76,15 @@
       },
       "first_lesson_of_tomorrow": {
         "name": "First lesson of tomorrow"
+      },
+      "average_grade": {
+        "name": "Average grade"
+      },
+      "latest_grade": {
+        "name": "Latest grade"
+      },
+      "grades_count": {
+        "name": "Grades count"
       }
     }
   }

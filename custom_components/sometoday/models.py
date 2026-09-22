@@ -186,6 +186,26 @@ def _parse_datetime(value: Any) -> datetime | None:
         return None
 
 
+def _as_float(value: Any) -> float | None:
+    """Coerce a SomToday numeric value to ``float``, or ``None``.
+
+    SomToday returns grades as strings (``"7.9"``) via the JSON API, but some
+    rows are not numeric at all (``"V"``, ``"O"``, ``""``). Those count as
+    "no grade" rather than a parse error. A Dutch decimal comma is tolerated.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(",", ".")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
 def _as_text(value: Any) -> str | None:
     """Return a display string from a scalar or a sequence of scalars.
 
@@ -328,6 +348,111 @@ def parse_lessons(payload: Any) -> list[Lesson]:
         if lesson is not None:
             lessons.append(lesson)
     return lessons
+
+
+@dataclass(frozen=True, slots=True)
+class Grade:
+    """A single grade from ``/rest/v1/resultaten/huidigVoorLeerling``."""
+
+    id: str | None
+    result: float | None
+    valid_result: float | None
+    date: datetime | None
+    counts: bool
+    type: str | None
+    subject: str | None
+    subject_abbr: str | None
+    not_made: bool = False
+
+    @property
+    def value(self) -> float | None:
+        """Return the grade that counts (``geldendResultaat`` or ``resultaat``)."""
+        if self.valid_result is not None:
+            return self.valid_result
+        return self.result
+
+    @property
+    def is_average_column(self) -> bool:
+        """Return whether this row is a computed average column.
+
+        SomToday returns its own averages (``ToetssoortGemiddeldeKolom``,
+        ``PeriodeGemiddeldeKolom``, ...) as ordinary rows. They must be
+        excluded when the integration computes its own average per subject, or
+        averages would be averaged.
+        """
+        return bool(self.type) and self.type.endswith("GemiddeldeKolom")
+
+    @classmethod
+    def from_api(cls, payload: Mapping[str, Any]) -> Grade:
+        """Build a :class:`Grade` from a single ``resultaten`` object.
+
+        The subject lives in the top-level ``vak`` relation; the nested
+        ``additionalObjects.vak`` shape is also tolerated. Raises
+        :class:`ValueError` when the row has no usable id.
+        """
+        grade_id = _first_link_id(payload)
+        if grade_id is None:
+            raise ValueError("Grade entry is missing a usable id")
+
+        additional = payload.get("additionalObjects")
+        if not isinstance(additional, Mapping):
+            additional = {}
+
+        subject: str | None = None
+        subject_abbr: str | None = None
+        vak = payload.get("vak")
+        if not isinstance(vak, Mapping):
+            vak = additional.get("vak")
+        if isinstance(vak, Mapping):
+            subject = _as_str(vak.get("naam"))
+            subject_abbr = _as_str(vak.get("afkorting"))
+
+        return cls(
+            id=_as_str(grade_id),
+            result=_as_float(payload.get("resultaat")),
+            valid_result=_as_float(payload.get("geldendResultaat")),
+            date=_parse_datetime(payload.get("datumInvoer")),
+            counts=not bool(payload.get("teltNietmee", False)),
+            type=_as_str(payload.get("type")),
+            subject=subject,
+            subject_abbr=subject_abbr,
+            not_made=bool(payload.get("toetsNietGemaakt", False)),
+        )
+
+
+def parse_grade(payload: Any) -> Grade | None:
+    """Parse a single grade row, returning ``None`` when unparseable."""
+    if not isinstance(payload, Mapping):
+        return None
+    try:
+        return Grade.from_api(payload)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_grades(payload: Any) -> list[Grade]:
+    """Parse a ``resultaten`` payload into a list of grades.
+
+    Both the documented ``{"items": [...]}`` shape and a plain list are
+    tolerated. Individual rows that cannot be parsed are skipped, so one
+    malformed grade never discards the whole list.
+    """
+    if isinstance(payload, Mapping):
+        entries: Any = payload.get("items", [])
+    elif isinstance(payload, Sequence) and not isinstance(payload, (str, bytes)):
+        entries = payload
+    else:
+        raise TypeError("Unexpected grade list payload")
+
+    if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
+        raise TypeError("Unexpected grade list payload")
+
+    grades: list[Grade] = []
+    for entry in entries:
+        grade = parse_grade(entry)
+        if grade is not None:
+            grades.append(grade)
+    return grades
 
 
 @dataclass(slots=True)

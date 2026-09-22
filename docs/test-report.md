@@ -1,5 +1,90 @@
 # Test report — SomToday Home Assistant plugin
 
+## v0.8.0 — Grades slice (current)
+
+**Component under test:** Grades slice (**v0.8.0**): `models.py` (`Grade`,
+`_as_float`, `parse_grade`, `parse_grades`), `api.py`
+(`async_get_grades`, `GRADES_PATH`), `coordinator.py` (`SomTodayData.grades`,
+the `enable_grades` opt-out and the non-fatal `_async_get_grades`),
+`sensor.py` (`SomTodayAverageGradeSensor`, `SomTodayLatestGradeSensor`,
+`SomTodayGradesCountSensor`), `manifest.json` 0.8.0 and the three new
+`entity.sensor.*` translation keys. The previously approved v0.3.0 (auth),
+v0.4.0 (identity), v0.5.0 (schedule/calendar) and v0.6.0/v0.7.0 (first-lesson
+sensors, brand images, `additionalObjects` parser fix) slices are unchanged
+and still green.
+**Date:** 2026-09-13.
+**Tester:** tester-agent.
+**Environment:**
+`/var/folders/my/41d2j1d50dg5sc8d603280x40000gn/T/opencode/sometoday-venv`
+(Python 3.14.7, Home Assistant 2026.9.1, pytest 9.0.3, pytest-asyncio 1.4.0,
+pytest-homeassistant-custom-component 0.13.364, aioresponses 0.7.9,
+pytest-cov 7.1.0, ruff 0.16.8).
+
+All SomToday HTTP is mocked (`FakeSession` / `FakeResponse` or
+`unittest.mock.patch`); the real API is never contacted.
+
+### Summary
+
+| Metric | Value |
+|--------|-------|
+| Test files | 11 + `conftest.py` |
+| Tests collected | **313** |
+| Passed | **313** |
+| Failed | **0** |
+| Xfailed / Skipped | **0 / 0** |
+| Line coverage (whole integration) | **100%** (1199 statements, 0 missed) |
+| Branch coverage (whole integration) | **99%** (318 branches, 10 partial, all pre-existing diagnostic guards) |
+| Grades modules | `models.py` **100% line / 100% branch**, `coordinator.py` **100% / 100%**, `sensor.py` **100% line / 97% branch** (167 statements, 46 branches) |
+| Lint (`ruff check custom_components tests`) | **clean** (`All checks passed!`, exit 0) |
+| Real SomToday API calls | **none** (all HTTP mocked) |
+
+**Gate (minimum 80% coverage): PASS** — 100% line, zero failures.
+
+### Test cases (v0.8.0)
+
+| Area | Test | Goal | Result |
+|------|------|------|--------|
+| `models.py` | `test_parse_grade_documented_shape` | Map the real payload (string grade, date, `type`, `vak`) | PASS |
+| `models.py` | `test_parse_grade_reads_subject_from_nested_additional_objects` | Tolerate `additionalObjects.vak` | PASS |
+| `models.py` | `test_grade_value_falls_back_to_result` / `test_grade_non_numeric_result_is_none` / `test_grade_empty_string_result_is_none` | `geldendResultaat` fallback, `"V"` and `""` → `None` | PASS |
+| `models.py` | `test_grade_numeric_result_is_accepted` / `test_grade_decimal_comma_is_tolerated` | int/float and `"7,5"` coercion | PASS |
+| `models.py` | `test_grade_average_column_detection` | `*GemiddeldeKolom` flagged, `Toetskolom` not | PASS |
+| `models.py` | `test_grade_counts_reflects_telt_niet_mee` / `test_grade_not_made_flag` | `teltNietmee` → `counts`; `toetsNietGemaakt` → `not_made` | PASS |
+| `models.py` | `test_parse_grade_missing_id_returns_none` / `test_parse_grades_skips_unparseable_entries` | Malformed rows are skipped | PASS |
+| `models.py` | `test_parse_grades_items_shape` / `plain_list_shape` / `empty` / `invalid_payloads` | Both payload shapes; `TypeError` on non-list | PASS |
+| `api.py` | `test_get_grades_url_params_and_range` | URL, `additional=toetssoortnaam`, `Range: items=0-99`, bearer | PASS |
+| `api.py` | `test_get_grades_paginates_two_pages` / `empty` | `Range` walker merges pages | PASS |
+| `api.py` | `test_get_grades_403_is_retryable` / `error_status` / `401_refreshes_and_retries` | Error mapping and reactive refresh | PASS |
+| `coordinator.py` | `test_update_data_fetches_and_parses_grades` | Grades fetched, parsed and scoped per student | PASS |
+| `coordinator.py` | `test_update_data_skips_grades_when_disabled` | `enable_grades=False` skips the call | PASS |
+| `coordinator.py` | `test_update_data_keeps_previous_grades_on_failure` / `grades_failure_without_snapshot` / `grades_failure_does_not_fail_the_poll` | Non-fatal failure keeps the snapshot and the schedule | PASS |
+| `coordinator.py` | `test_update_data_grades_invalid_auth_escalates` | Auth rejection still triggers reauth | PASS |
+| `sensor.py` | `test_average_grade_overall_and_per_subject` / `rounds_to_one_decimal` | Overall mean + per-subject `averages` map | PASS |
+| `sensor.py` | `test_average_grade_excludes_average_columns_and_non_counting` | Average columns / non-counting / not-made excluded | PASS |
+| `sensor.py` | `test_latest_grade_state_and_subject` / `falls_back_to_abbreviation` | Latest grade reports its subject | PASS |
+| `sensor.py` | `test_grades_count_counts_only_valid_grades` | Count excludes average/non-counting rows | PASS |
+| `sensor.py` | `test_grade_sensors_handle_a_missing_snapshot` / `handle_a_grade_without_a_date` / `helpers_skip_gradeless_rows` | Edge cases (no snapshot, no date, no value) | PASS |
+| `test_init.py` | `test_setup_entry_creates_coordinator_and_entities` / `unload_entry_unloads_platforms` | Platform now creates 5 sensors / 6 entities total | PASS |
+| `test_translations.py` | `test_translation_files_have_matching_keys` | `strings.json`/`en`/`nl` keys stay in sync | PASS |
+
+Per-file test counts (collected): `test_models.py` 77, `test_auth.py` 54,
+`test_api.py` 48, `test_config_flow.py` 45, `test_sensor.py` 34,
+`test_coordinator.py` 28, `test_calendar.py` 15, `test_translations.py` 4,
+`test_init.py` 4, `test_const.py` 3, `test_manifest.py` 1.
+
+### Findings
+
+- **No open defects.** The grades slice meets the acceptance criteria:
+  per-subject average (`averages` attribute) and `latest_grade` carrying its
+  `subject` are both covered directly.
+- Non-fatal grades behaviour is verified: a grades `SomTodayError` leaves
+  `schedule` populated and keeps the previous `grades`; a
+  `SomtodayInvalidAuth` still escalates to `ConfigEntryAuthFailed`.
+
+---
+
+# Historical test report — v0.6.0 first-lesson sensor slice
+
 **Component under test:** First-lesson sensor slice (**v0.6.0**) including the
 **S4** fix: `sensor.py` (`SomTodayFirstLessonSensor`, single-`now` derived
 state), `__init__.py` (`PLATFORMS = [Platform.SENSOR, Platform.CALENDAR]`) and

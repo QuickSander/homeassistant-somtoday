@@ -16,10 +16,13 @@ from custom_components.sometoday.const import (
 )
 from custom_components.sometoday.models import (
     Account,
+    Grade,
     Lesson,
     SomTodayTokens,
     Student,
     parse_account,
+    parse_grade,
+    parse_grades,
     parse_lesson,
     parse_lessons,
     parse_students,
@@ -652,3 +655,187 @@ def test_parse_lesson_offset_timezones_represent_same_instant() -> None:
     assert lesson is not None
     assert lesson.start == lesson.end
     assert lesson.start.utcoffset() == timedelta(hours=2)
+
+
+# ---------------------------------------------------------------------------
+# Grade / parse_grades
+# ---------------------------------------------------------------------------
+GRADE_PAYLOAD: dict[str, Any] = {
+    "links": [{"id": 987, "rel": "self"}],
+    "resultaat": "7.9",
+    "geldendResultaat": "7.9",
+    "datumInvoer": "2019-09-10T13:41:11.805+02:00",
+    "teltNietmee": False,
+    "toetsNietGemaakt": False,
+    "type": "Toetskolom",
+    "vak": {"naam": "Wiskunde", "afkorting": "WI"},
+}
+
+
+def test_parse_grade_documented_shape() -> None:
+    """Every documented field is mapped from the real payload."""
+    grade = parse_grade(GRADE_PAYLOAD)
+
+    assert grade is not None
+    assert grade.id == "987"
+    assert grade.result == 7.9
+    assert grade.valid_result == 7.9
+    assert grade.value == 7.9
+    assert grade.date == datetime.fromisoformat("2019-09-10T13:41:11.805+02:00")
+    assert grade.counts is True
+    assert grade.type == "Toetskolom"
+    assert grade.subject == "Wiskunde"
+    assert grade.subject_abbr == "WI"
+    assert grade.not_made is False
+    assert grade.is_average_column is False
+
+
+def test_parse_grade_reads_subject_from_nested_additional_objects() -> None:
+    """A ``vak`` nested under ``additionalObjects`` is tolerated."""
+    payload = {**GRADE_PAYLOAD, "vak": None}
+    payload["additionalObjects"] = {
+        "vak": {"naam": "Scheikunde", "afkorting": "schk"}
+    }
+
+    grade = parse_grade(payload)
+
+    assert grade is not None
+    assert grade.subject == "Scheikunde"
+    assert grade.subject_abbr == "schk"
+
+
+def test_grade_value_falls_back_to_result() -> None:
+    """Without ``geldendResultaat`` the plain ``resultaat`` is used."""
+    grade = parse_grade({**GRADE_PAYLOAD, "geldendResultaat": None})
+
+    assert grade is not None
+    assert grade.valid_result is None
+    assert grade.value == 7.9
+
+
+def test_grade_non_numeric_result_is_none() -> None:
+    """A non-numeric grade (e.g. ``V``) must not crash and counts as no value."""
+    grade = parse_grade({**GRADE_PAYLOAD, "resultaat": "V", "geldendResultaat": "V"})
+
+    assert grade is not None
+    assert grade.result is None
+    assert grade.valid_result is None
+    assert grade.value is None
+
+
+def test_grade_numeric_result_is_accepted() -> None:
+    """A numeric (non-string) ``resultaat`` is coerced to ``float``."""
+    grade = parse_grade({**GRADE_PAYLOAD, "resultaat": 7, "geldendResultaat": 7.5})
+
+    assert grade is not None
+    assert grade.result == 7.0
+    assert grade.value == 7.5
+
+
+def test_grade_empty_string_result_is_none() -> None:
+    """An empty grade string counts as no grade."""
+    grade = parse_grade({**GRADE_PAYLOAD, "resultaat": "", "geldendResultaat": ""})
+
+    assert grade is not None
+    assert grade.result is None
+    assert grade.value is None
+
+
+def test_grade_decimal_comma_is_tolerated() -> None:
+    """A Dutch decimal comma is normalised to a dot."""
+    grade = parse_grade({**GRADE_PAYLOAD, "resultaat": "7,5", "geldendResultaat": "7,5"})
+
+    assert grade is not None
+    assert grade.value == 7.5
+
+
+def test_grade_average_column_detection() -> None:
+    """Computed average columns are flagged so they are not averaged again."""
+    average = parse_grade({**GRADE_PAYLOAD, "type": "ToetssoortGemiddeldeKolom"})
+    regular = parse_grade({**GRADE_PAYLOAD, "type": "Toetskolom"})
+
+    assert average is not None and average.is_average_column is True
+    assert regular is not None and regular.is_average_column is False
+
+
+def test_grade_counts_reflects_telt_niet_mee() -> None:
+    """``teltNietmee`` inverts into ``counts``."""
+    grade = parse_grade({**GRADE_PAYLOAD, "teltNietmee": True})
+
+    assert grade is not None
+    assert grade.counts is False
+
+
+def test_grade_not_made_flag() -> None:
+    """``toetsNietGemaakt`` is surfaced so the sensors can skip the row."""
+    grade = parse_grade({**GRADE_PAYLOAD, "toetsNietGemaakt": True})
+
+    assert grade is not None
+    assert grade.not_made is True
+
+
+def test_parse_grade_missing_id_returns_none() -> None:
+    """A row without a usable id is unparseable."""
+    assert parse_grade({"resultaat": "7.9"}) is None
+
+
+def test_parse_grade_non_mapping_returns_none() -> None:
+    """A non-mapping row is skipped."""
+    assert parse_grade("nope") is None
+
+
+def test_parse_grade_missing_optional_fields() -> None:
+    """A minimal row with only an id parses with empty optional values."""
+    grade = parse_grade({"id": 1})
+
+    assert grade is not None
+    assert grade.id == "1"
+    assert grade.value is None
+    assert grade.date is None
+    assert grade.subject is None
+    assert grade.counts is True
+
+
+def test_parse_grades_items_shape() -> None:
+    """The documented ``{"items": [...]}`` payload is parsed."""
+    grades = parse_grades({"items": [GRADE_PAYLOAD]})
+
+    assert len(grades) == 1
+    assert grades[0].subject == "Wiskunde"
+
+
+def test_parse_grades_plain_list_shape() -> None:
+    """A bare list of grades is tolerated."""
+    assert [grade.id for grade in parse_grades([GRADE_PAYLOAD])] == ["987"]
+
+
+def test_parse_grades_skips_unparseable_entries() -> None:
+    """Unparseable entries are skipped while valid ones are kept."""
+    grades = parse_grades({"items": [GRADE_PAYLOAD, "nope", {"resultaat": "8"}]})
+
+    assert len(grades) == 1
+    assert grades[0].id == "987"
+
+
+def test_parse_grades_empty() -> None:
+    """Empty payloads yield no grades."""
+    assert parse_grades({"items": []}) == []
+    assert parse_grades([]) == []
+
+
+def test_parse_grades_invalid_payloads() -> None:
+    """A non-list top-level payload raises ``TypeError``."""
+    with pytest.raises(TypeError):
+        parse_grades("nope")
+    with pytest.raises(TypeError):
+        parse_grades(42)
+    with pytest.raises(TypeError):
+        parse_grades({"items": "nope"})
+
+
+def test_grade_is_frozen_and_slotted() -> None:
+    """The dataclass is immutable and carries the parsed values."""
+    grade = parse_grade(GRADE_PAYLOAD)
+    assert isinstance(grade, Grade)
+    with pytest.raises(AttributeError):
+        grade.result = 1.0  # type: ignore[misc]
