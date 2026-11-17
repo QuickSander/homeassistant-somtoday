@@ -4,7 +4,7 @@ description: >-
   to docs/architecture.md. Use for config flow, coordinator, API client and
   sensor entities.
 mode: subagent
-model: deepseek/deepseek-v4-flash
+model: deepseek/deepseek-flash
 permission:
   edit: allow
   bash: allow

@@ -4,7 +4,7 @@ description: >-
   docs/test-report.md. Use to validate the config flow, coordinator, sensors and
   OAuth2 flow.
 mode: subagent
-model: deepseek/deepseek-v4-flash
+model: deepseek/deepseek-flash
 permission:
   edit:
     "tests/**": allow

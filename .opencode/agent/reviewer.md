@@ -4,7 +4,7 @@ description: >-
   docs/review.md. Use for security, error handling and Home Assistant best
   practices.
 mode: subagent
-model: deepseek/deepseek-v4-flash
+model: deepseek/deepseek-flash
 temperature: 0.1
 permission:
   edit:
