@@ -3,6 +3,33 @@
 All notable changes to the SomToday Home Assistant integration are documented
 in this file.
 
+## [0.8.1] - 2026-11-17
+
+### Fixed
+
+- **Grade sensors stayed `unknown` while the calendar worked.** Grades were read
+  from `/rest/v1/resultaten/huidigVoorLeerling/{id}`, which returns HTTP 404 for
+  accounts that use the current portal (the parent portal and the current
+  SomToday app). The client now reads the per-dossier endpoint
+  `/rest/v1/geldendvoortgangsdossierresultaten/leerling/{id}` with the same
+  `type`/`additional`/`sort` query the app uses, falls back to the legacy
+  `huidigVoorLeerling` endpoint on HTTP 404, and reads
+  `/rest/v1/geldendexamendossierresultaten/leerling/{id}` when the voortgang
+  dossier is empty (exam-year results).
+- `Grade`/`parse_grade` now accept the current result shape (`cijfer`,
+  `formattedResultaat`, `additionalObjects.vaknaam`, `bijzonderheid`) next to
+  the legacy shape, and flag results imported from another subject
+  (`resultaatAnderVakKolom`) so they are not counted twice.
+- The grade sensors ignore imported results.
+
+### Changed
+
+- Docs: `architecture.md` §5/§7.2/§7.3/§8.1/§13 and the README grades section
+  describe the dossier endpoints and the current result fields.
+- `manifest.json` bumped to `0.8.1`.
+- Tests: the grade API paths (dossier, legacy fallback, exam fallback), the
+  current result shape and the imported-result filter.
+
 ## [0.8.0] - 2026-09-13
 
 ### Added

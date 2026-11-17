@@ -687,7 +687,85 @@ def test_parse_grade_documented_shape() -> None:
     assert grade.subject == "Wiskunde"
     assert grade.subject_abbr == "WI"
     assert grade.not_made is False
+    assert grade.imported is False
     assert grade.is_average_column is False
+
+
+# The current parent-portal/app shape: numeric ``cijfer`` plus a display value
+# and the subject in ``additionalObjects.vaknaam``.
+CURRENT_GRADE_PAYLOAD: dict[str, Any] = {
+    "links": [{"id": 988, "rel": "self"}],
+    "cijfer": 7.5,
+    "formattedResultaat": "7,5",
+    "datumInvoerEerstePoging": "2026-10-01T10:00:00+02:00",
+    "type": "Toetskolom",
+    "additionalObjects": {
+        "vaknaam": "Wiskunde",
+        "resultaatkolom": "P1-T1",
+        "vakuuid": "vak-uuid",
+        "lichtinguuid": "lichting-uuid",
+    },
+}
+
+
+def test_parse_grade_current_dossier_shape() -> None:
+    """The current dossier result shape (``cijfer``/``vaknaam``) is parsed."""
+    grade = parse_grade(CURRENT_GRADE_PAYLOAD)
+
+    assert grade is not None
+    assert grade.id == "988"
+    assert grade.result == 7.5
+    assert grade.valid_result == 7.5
+    assert grade.value == 7.5
+    assert grade.subject == "Wiskunde"
+    assert grade.subject_abbr is None
+    assert grade.type == "Toetskolom"
+    assert grade.counts is True
+    assert grade.not_made is False
+    assert grade.imported is False
+    assert grade.date == datetime.fromisoformat("2026-10-01T10:00:00+02:00")
+
+
+def test_parse_grade_formatted_result_is_a_fallback() -> None:
+    """Without ``cijfer`` the formatted value (``"7,5 !"``) is used."""
+    payload = {
+        **CURRENT_GRADE_PAYLOAD,
+        "cijfer": None,
+        "formattedResultaat": "7,5 !",
+    }
+
+    grade = parse_grade(payload)
+
+    assert grade is not None
+    assert grade.value == 7.5
+
+
+def test_parse_grade_bijzonderheid_telt_niet_mee() -> None:
+    """The current ``TeltNietMee`` marker excludes a row from the average."""
+    grade = parse_grade({**CURRENT_GRADE_PAYLOAD, "bijzonderheid": "TeltNietMee"})
+
+    assert grade is not None
+    assert grade.counts is False
+    assert grade.not_made is False
+
+
+def test_parse_grade_bijzonderheid_niet_gemaakt() -> None:
+    """The current ``NietGemaakt`` marker is surfaced as ``not_made``."""
+    grade = parse_grade({**CURRENT_GRADE_PAYLOAD, "bijzonderheid": "NietGemaakt"})
+
+    assert grade is not None
+    assert grade.counts is True
+    assert grade.not_made is True
+
+
+def test_parse_grade_imported_result_is_flagged() -> None:
+    """A result imported from another subject is flagged to avoid double counts."""
+    grade = parse_grade(
+        {**CURRENT_GRADE_PAYLOAD, "resultaatAnderVakKolom": {"vak": {"naam": "AK"}}}
+    )
+
+    assert grade is not None
+    assert grade.imported is True
 
 
 def test_parse_grade_reads_subject_from_nested_additional_objects() -> None:

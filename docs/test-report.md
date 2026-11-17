@@ -1,6 +1,34 @@
 # Test report — SomToday Home Assistant plugin
 
-## v0.8.0 — Grades slice (current)
+## v0.8.1 — Grade endpoint fix (current)
+
+**Component under test:** `api.py` (`async_get_grades`, the dossier/legacy/exam
+paths and `_grade_params`), `models.py` (`Grade.from_api` current shape,
+`bijzonderheid`, `imported`, `_strip_not_made`), `sensor.py` (imported-result
+filter) and the updated `tests/test_api.py` / `tests/test_models.py` /
+`tests/test_sensor.py`.
+**Date:** 2026-11-17.
+**Environment:** Python 3.14.7, Home Assistant 2026.9.1, pytest 9.x,
+pytest-homeassistant-custom-component, ruff 0.17.5.
+
+All SomToday HTTP is mocked; the real API is never contacted.
+
+### Summary
+
+| Metric | Value |
+|--------|-------|
+| Tests collected | **321** |
+| Passed | **321** |
+| Failed | **0** |
+| Line coverage (whole integration) | **100%** (1242 statements, 0 missed) |
+
+New cases: the dossier endpoint query and `Range` header, the legacy
+`huidigVoorLeerling` fallback on HTTP 404, the exam-dossier fallback when the
+voortgang dossier is empty, the current result shape (`cijfer`,
+`formattedResultaat`, `additionalObjects.vaknaam`, `bijzonderheid`,
+`resultaatAnderVakKolom`) and the imported-result sensor filter.
+
+## v0.8.0 — Grades slice
 
 **Component under test:** Grades slice (**v0.8.0**): `models.py` (`Grade`,
 `_as_float`, `parse_grade`, `parse_grades`), `api.py`

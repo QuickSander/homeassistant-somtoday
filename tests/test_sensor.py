@@ -85,6 +85,7 @@ def _grade(
     counts: bool = True,
     grade_type: str = "Toetskolom",
     not_made: bool = False,
+    imported: bool = False,
 ) -> Grade:
     """Return a parsed grade for the coordinator snapshot."""
     return Grade(
@@ -97,6 +98,7 @@ def _grade(
         subject=subject,
         subject_abbr=subject_abbr,
         not_made=not_made,
+        imported=imported,
     )
 
 
@@ -674,6 +676,19 @@ async def test_average_grade_excludes_average_columns_and_non_counting(
     assert attributes["averages"] == {"Wiskunde": 8.0}
     assert attributes["grades"] == {"Wiskunde": 8.0}
     assert len(attributes["grades_raw"]) == 1
+
+
+async def test_average_grade_excludes_imported_results(hass: Any) -> None:
+    """A result imported from another subject is not counted twice."""
+    grades = [
+        _grade(8.0, grade_id="1", day=_day(1)),
+        _grade(1.0, grade_id="2", day=_day(2), imported=True),
+    ]
+    coordinator, entry = _coordinator(hass, grades=grades)
+    entity = SomTodayAverageGradeSensor(coordinator, entry)
+
+    assert entity.native_value == 8.0
+    assert SomTodayGradesCountSensor(coordinator, entry).native_value == 1
 
 
 async def test_average_grade_no_grades_returns_none(hass: Any) -> None:

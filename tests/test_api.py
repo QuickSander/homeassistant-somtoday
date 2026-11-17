@@ -15,7 +15,12 @@ import pytest
 
 from custom_components.sometoday.api import (
     APPOINTMENTS_PATH,
+    EXAM_GRADES_PATH,
+    GRADE_ADDITIONALS,
+    GRADE_SORT,
+    GRADE_TYPES,
     GRADES_PATH,
+    LEGACY_GRADES_PATH,
     SomTodayApiClient,
     _release,
 )
@@ -840,11 +845,21 @@ async def test_get_appointments_403_is_retryable(
 
 
 # ---------------------------------------------------------------------------
-# async_get_grades (paginated /rest/v1/resultaten/huidigVoorLeerling/{id})
+# async_get_grades (paginated dossier endpoints)
 # ---------------------------------------------------------------------------
 def _grade(grade_id: int) -> dict[str, Any]:
     """Return a minimal grade payload."""
     return {"links": [{"id": grade_id}]}
+
+
+def _grade_params() -> list[tuple[str, str]]:
+    """Return the query the current grade endpoints receive."""
+    params: list[tuple[str, str]] = [
+        ("type", grade_type) for grade_type in GRADE_TYPES
+    ]
+    params.extend(("additional", additional) for additional in GRADE_ADDITIONALS)
+    params.append(("sort", GRADE_SORT))
+    return params
 
 
 async def test_get_grades_url_params_and_range(
@@ -863,9 +878,51 @@ async def test_get_grades_url_params_and_range(
     method, url, kwargs = session.calls[0]
     assert method == "GET"
     assert url == f"{API_URL}{GRADES_PATH.format(student_id=1234)}"
-    assert kwargs["params"] == [("additional", "toetssoortnaam")]
+    assert kwargs["params"] == _grade_params()
     assert kwargs["headers"]["Range"] == "items=0-99"
     assert kwargs["headers"]["Authorization"] == "Bearer access"
+
+
+async def test_get_grades_falls_back_to_legacy_on_404(
+    fake_session: Any, fake_response: Any
+) -> None:
+    """A school without the dossier endpoint still uses huidigVoorLeerling."""
+    session = fake_session(
+        [
+            fake_response(404),
+            fake_response(200, json_data={"items": [_grade(1)]}),
+        ]
+    )
+    api, _ = _client(session)
+
+    grades = await api.async_get_grades(1234)
+
+    assert grades == [_grade(1)]
+    assert len(session.calls) == 2
+    _, url, kwargs = session.calls[1]
+    assert url == f"{API_URL}{LEGACY_GRADES_PATH.format(student_id=1234)}"
+    assert kwargs["params"] == [("additional", "toetssoortnaam")]
+
+
+async def test_get_grades_uses_exam_dossier_when_voortgang_is_empty(
+    fake_session: Any, fake_response: Any
+) -> None:
+    """An exam-year result that lives only in the exam dossier is returned."""
+    session = fake_session(
+        [
+            fake_response(200, json_data={"items": []}),
+            fake_response(200, json_data={"items": [_grade(2)]}),
+        ]
+    )
+    api, _ = _client(session)
+
+    grades = await api.async_get_grades(1234)
+
+    assert grades == [_grade(2)]
+    assert len(session.calls) == 2
+    _, url, kwargs = session.calls[1]
+    assert url == f"{API_URL}{EXAM_GRADES_PATH.format(student_id=1234)}"
+    assert kwargs["params"] == _grade_params()
 
 
 async def test_get_grades_paginates_two_pages(
@@ -898,8 +955,13 @@ async def test_get_grades_paginates_two_pages(
 
 
 async def test_get_grades_empty(fake_session: Any, fake_response: Any) -> None:
-    """An empty page yields no grades."""
-    session = fake_session([fake_response(200, json_data={"items": []})])
+    """Empty voortgang and exam dossiers yield no grades."""
+    session = fake_session(
+        [
+            fake_response(200, json_data={"items": []}),
+            fake_response(200, json_data={"items": []}),
+        ]
+    )
     api, _ = _client(session)
 
     assert await api.async_get_grades(1234) == []

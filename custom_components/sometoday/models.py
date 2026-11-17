@@ -206,6 +206,13 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
+def _strip_not_made(value: Any) -> Any:
+    """Drop the ``" !"`` postfix the portal adds to a missed grade."""
+    if isinstance(value, str) and value.endswith(" !"):
+        return value[:-2]
+    return value
+
+
 def _as_text(value: Any) -> str | None:
     """Return a display string from a scalar or a sequence of scalars.
 
@@ -352,7 +359,7 @@ def parse_lessons(payload: Any) -> list[Lesson]:
 
 @dataclass(frozen=True, slots=True)
 class Grade:
-    """A single grade from ``/rest/v1/resultaten/huidigVoorLeerling``."""
+    """A single result row from a grade endpoint."""
 
     id: str | None
     result: float | None
@@ -363,6 +370,7 @@ class Grade:
     subject: str | None
     subject_abbr: str | None
     not_made: bool = False
+    imported: bool = False
 
     @property
     def value(self) -> float | None:
@@ -384,11 +392,14 @@ class Grade:
 
     @classmethod
     def from_api(cls, payload: Mapping[str, Any]) -> Grade:
-        """Build a :class:`Grade` from a single ``resultaten`` object.
+        """Build a :class:`Grade` from a single result object.
 
-        The subject lives in the top-level ``vak`` relation; the nested
-        ``additionalObjects.vak`` shape is also tolerated. Raises
-        :class:`ValueError` when the row has no usable id.
+        Both the legacy ``huidigVoorLeerling`` shape (``geldendResultaat``,
+        ``teltNietmee``) and the current dossier shape (``cijfer``,
+        ``formattedResultaat``, ``bijzonderheid``) are accepted. The subject
+        lives in the top-level ``vak`` relation or in
+        ``additionalObjects.vaknaam``. Raises :class:`ValueError` when the row
+        has no usable id.
         """
         grade_id = _first_link_id(payload)
         if grade_id is None:
@@ -406,17 +417,48 @@ class Grade:
         if isinstance(vak, Mapping):
             subject = _as_str(vak.get("naam"))
             subject_abbr = _as_str(vak.get("afkorting"))
+        if subject is None:
+            subject = _as_str(additional.get("vaknaam"))
+
+        # ``cijfer`` is the current shape; ``geldendResultaat``/``resultaat``
+        # are the legacy columns. ``formattedResultaat`` is the display value
+        # (``"7,5"``) and is only used when no numeric field is present.
+        formatted = _as_float(_strip_not_made(payload.get("formattedResultaat")))
+        result = _as_float(payload.get("resultaat"))
+        if result is None:
+            result = formatted
+        valid_result = _as_float(payload.get("geldendResultaat"))
+        if valid_result is None:
+            valid_result = _as_float(payload.get("cijfer"))
+        if valid_result is None:
+            valid_result = formatted
+
+        bijzonderheid = _as_str(payload.get("bijzonderheid"))
+        if bijzonderheid is not None:
+            marker = bijzonderheid.lower()
+            counts = marker != "teltnietmee"
+            not_made = marker == "nietgemaakt"
+        else:
+            counts = not bool(payload.get("teltNietmee", False))
+            not_made = bool(payload.get("toetsNietGemaakt", False))
 
         return cls(
             id=_as_str(grade_id),
-            result=_as_float(payload.get("resultaat")),
-            valid_result=_as_float(payload.get("geldendResultaat")),
-            date=_parse_datetime(payload.get("datumInvoer")),
-            counts=not bool(payload.get("teltNietmee", False)),
+            result=result,
+            valid_result=valid_result,
+            date=(
+                _parse_datetime(payload.get("datumInvoer"))
+                or _parse_datetime(payload.get("datumInvoerEerstePoging"))
+                or _parse_datetime(payload.get("datumInvoerHerkansing1"))
+            ),
+            counts=counts,
             type=_as_str(payload.get("type")),
             subject=subject,
             subject_abbr=subject_abbr,
-            not_made=bool(payload.get("toetsNietGemaakt", False)),
+            not_made=not_made,
+            # A result imported from another subject (for example an SE grade)
+            # would otherwise be counted twice when both dossiers are read.
+            imported=bool(payload.get("resultaatAnderVakKolom")),
         )
 
 

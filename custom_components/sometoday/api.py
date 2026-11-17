@@ -32,7 +32,30 @@ _LOGGER = logging.getLogger(__name__)
 ACCOUNT_PATH = "/rest/v1/account/me"
 STUDENTS_PATH = "/rest/v1/leerlingen"
 APPOINTMENTS_PATH = "/rest/v1/afspraken"
-GRADES_PATH = "/rest/v1/resultaten/huidigVoorLeerling/{student_id}"
+# The parent portal and the current SomToday app read grades from the per
+# dossier endpoints. The older ``resultaten/huidigVoorLeerling`` path is kept
+# as a fallback for schools that only implement that one.
+GRADES_PATH = "/rest/v1/geldendvoortgangsdossierresultaten/leerling/{student_id}"
+EXAM_GRADES_PATH = "/rest/v1/geldendexamendossierresultaten/leerling/{student_id}"
+LEGACY_GRADES_PATH = "/rest/v1/resultaten/huidigVoorLeerling/{student_id}"
+
+# The current grade endpoints only return the columns that count as a grade;
+# average/report columns are requested separately by the app and are excluded
+# here so the integration never averages averages.
+GRADE_TYPES = (
+    "Toetskolom",
+    "DeeltoetsKolom",
+    "Werkstukcijferkolom",
+    "Advieskolom",
+)
+GRADE_ADDITIONALS = (
+    "vaknaam",
+    "resultaatkolom",
+    "naamalternatiefniveau",
+    "vakuuid",
+    "lichtinguuid",
+)
+GRADE_SORT = "desc-geldendResultaatCijferInvoer"
 
 # SomToday paginates list endpoints with ``Range: items=<start>-<end>`` and
 # answers ``206 Partial Content`` plus a ``Content-Range`` header. Pages are
@@ -169,16 +192,51 @@ class SomTodayApiClient:
     ) -> list[dict[str, Any]]:
         """Return every grade of one student.
 
+        The current app (and the parent portal) exposes grades through the
+        per-dossier endpoints. The older ``resultaten/huidigVoorLeerling``
+        path is tried when the school does not implement the new one (HTTP
+        404). When the voortgang dossier is empty the exam dossier is read as
+        well, because an exam-year student's results can live there only.
+
         The endpoint is paginated like ``afspraken`` (``Range: items=...``), so
-        the same walker is reused. ``additional=toetssoortnaam`` adds the
-        human-readable test-type name. The result is intentionally not parsed
-        here; the coordinator turns it into ``Grade`` rows via ``models.py``.
+        the same walker is reused. The result is intentionally not parsed here;
+        the coordinator turns it into ``Grade`` rows via ``models.py``.
         """
-        params = [("additional", "toetssoortnaam")]
+        params = self._grade_params()
+        try:
+            grades = await self._request_paginated(
+                GRADES_PATH.format(student_id=student_id),
+                params=params,
+            )
+        except SomTodayApiError as err:
+            if "HTTP 404" not in str(err):
+                raise
+            _LOGGER.debug(
+                "SomToday grades endpoint is unavailable; using the legacy "
+                "huidigVoorLeerling endpoint"
+            )
+            return await self._request_paginated(
+                LEGACY_GRADES_PATH.format(student_id=student_id),
+                params=[("additional", "toetssoortnaam")],
+            )
+
+        if grades:
+            return grades
+
         return await self._request_paginated(
-            GRADES_PATH.format(student_id=student_id),
+            EXAM_GRADES_PATH.format(student_id=student_id),
             params=params,
         )
+
+    @staticmethod
+    def _grade_params() -> list[tuple[str, str]]:
+        """Return the shared query for the current grade endpoints."""
+        params: list[tuple[str, str]] = [
+            ("type", grade_type) for grade_type in GRADE_TYPES
+        ]
+        params.extend(("additional", additional) for additional in GRADE_ADDITIONALS)
+        params.append(("sort", GRADE_SORT))
+        return params
 
     # ------------------------------------------------------------------
     # HTTP helpers

@@ -456,9 +456,9 @@ authorize-URL step and the paste/DevTools instructions are localised here.
 
 > **Implemented for the schedule (v0.5.0) and grades (v0.8.0) slices.** The
 > coordinator polls `/rest/v1/afspraken` and
-> `/rest/v1/resultaten/huidigVoorLeerling/{id}` for the entry's student and
-> exposes `SomTodayData(schedule, students, grades, updated_at)`; homework and
-> absence are added to the same coordinator in later slices.
+> `/rest/v1/geldendvoortgangsdossierresultaten/leerling/{id}` for the entry's
+> student and exposes `SomTodayData(schedule, students, grades, updated_at)`;
+> homework and absence are added to the same coordinator in later slices.
 
 ```text
 SomTodayDataUpdateCoordinator(DataUpdateCoordinator[SomTodayData])
@@ -581,7 +581,9 @@ removed Feb 2025). The form-scraping POSTs (`0-1.-panel-signInForm`,
 | GET | `/rest/v1/leerlingen` | Current student(s) | `additional=pasfoto` |
 | GET | `/rest/v1/leerlingen/{id}` | Student detail | — |
 | GET | `/rest/v1/afspraken` | Schedule | `sort=asc-id`, `additional=vak`, `additional=docentAfkortingen`, `additional=leerlingen`, `begindatum=YYYY-MM-DD`, `einddatum=YYYY-MM-DD` |
-| GET | `/rest/v1/resultaten/huidigVoorLeerling/{id}` | Grades (paginated) | `Range: items=0-99`, `additional=toetssoortnaam` |
+| GET | `/rest/v1/geldendvoortgangsdossierresultaten/leerling/{id}` | Grades (paginated) | repeated `type`, repeated `additional`, `sort=desc-geldendResultaatCijferInvoer` |
+| GET | `/rest/v1/geldendexamendossierresultaten/leerling/{id}` | Exam-dossier grades (fallback when voortgang is empty) | same query |
+| GET | `/rest/v1/resultaten/huidigVoorLeerling/{id}` | Legacy grades (fallback on HTTP 404) | `additional=toetssoortnaam` |
 | GET | `/rest/v1/studiewijzeritemafspraaktoekenningen` | Homework linked to appointments | `begintNaOfOp=YYYY-MM-DD`, `geenDifferentiatieOfGedifferentieerdVoorLeerling`, `additional`, `jaarWeek` |
 | GET | `/rest/v1/studiewijzeritemdagtoekenningen` | Homework per day | `begintNaOfOp`, `geenDifferentiatieOfGedifferentieerdVoorLeerling`, `additional` |
 | GET | `/rest/v1/studiewijzeritemweektoekenningen` | Homework per week | `begintNaOfOp`, `geenDifferentiatieOfGedifferentieerdVoorLeerling`, `additional`, `weeknummer` |
@@ -626,7 +628,12 @@ student), each entry must read **only its own student's** data:
   parameter **`geenDifferentiatieOfGedifferentieerdVoorLeerling=<student_id>`**
   so SomToday filters server-side (the reference integration does this).
 - **Grades**: already per student via
-  `/rest/v1/resultaten/huidigVoorLeerling/{student_id}`.
+  `/rest/v1/geldendvoortgangsdossierresultaten/leerling/{student_id}`. When that
+  endpoint is unavailable (HTTP 404) the client falls back to the legacy
+  `/rest/v1/resultaten/huidigVoorLeerling/{student_id}`; when the voortgang
+  dossier is empty it also reads
+  `/rest/v1/geldendexamendossierresultaten/leerling/{student_id}` so an
+  exam-year student's results are not missed.
 - **Absence** (`/absentiemeldingen`): not verified to be student-scoped; filter
   client-side on the `leerling` reference until confirmed (scheduled with the
   coordinator work).
@@ -658,14 +665,15 @@ This mapping is normative for the `models.py` parsers.
 | | `title` | `titel` |
 | | `type` | `afspraakType.naam` |
 | `Grade` | `id` | `links[0].id` (fallback `id`) |
-| | `result` | `resultaat` (numeric string → `float`, else `None`) |
-| | `valid_result` | `geldendResultaat` (numeric string → `float`, else `None`) |
-| | `date` | `datumInvoer` |
-| | `counts` | `not teltNietmee` |
+| | `result` | `resultaat`, else `formattedResultaat` (numeric string → `float`, else `None`) |
+| | `valid_result` | `geldendResultaat`, else `cijfer`, else `formattedResultaat` |
+| | `date` | `datumInvoer`, else `datumInvoerEerstePoging`, else `datumInvoerHerkansing1` |
+| | `counts` | `bijzonderheid != "TeltNietMee"` (legacy: `not teltNietmee`) |
 | | `type` | `type` |
-| | `subject` | `vak.naam` (fallback `additionalObjects.vak.naam`) |
+| | `subject` | `vak.naam`, else `additionalObjects.vak.naam`, else `additionalObjects.vaknaam` |
 | | `subject_abbr` | `vak.afkorting` (fallback `additionalObjects.vak.afkorting`) |
-| | `not_made` | `toetsNietGemaakt` |
+| | `not_made` | `bijzonderheid == "NietGemaakt"` (legacy: `toetsNietGemaakt`) |
+| | `imported` | `resultaatAnderVakKolom` is present |
 | `HomeworkItem` | `id` | `links[0].id` |
 | | `topic` | `studiewijzerItem.onderwerp` |
 | | `kind` | `studiewijzerItem.huiswerkType` |
@@ -762,10 +770,12 @@ templates without dozens of entities:
   `date`, `type` and `counts`.
 - `grades_count` — the number of counting grades.
 
-A grade **counts** when `teltNietmee` is false, `toetsNietGemaakt` is false, the
-row is not one of SomToday's own average columns and the value is numeric. The
-overall mean and the per-subject means are computed from the same filtered set;
-subjects are grouped by `subject` (falling back to `subject_abbr`).
+A grade **counts** when it is not marked `TeltNietMee` (legacy: `teltNietmee`),
+is not marked `NietGemaakt` (legacy: `toetsNietGemaakt`), is not a result
+imported from another subject (`resultaatAnderVakKolom`), is not one of
+SomToday's own average columns and the value is numeric. The overall mean and
+the per-subject means are computed from the same filtered set; subjects are
+grouped by `subject` (falling back to `subject_abbr`).
 
 ### 8.2 `binary_sensor` platform
 
@@ -1013,7 +1023,7 @@ grant disabled). This revision replaces it with the browser authorization-code
 | `invalid_grant` treated as a generic auth error | `SomtodayInvalidAuth` → definitive rejection → reauth |
 | No `client_id` / implied `client_secret` | Public `client_id` constant (`somtoday-leerling-native`) + PKCE `S256`, no secret |
 | Password stored in entry | Password never used; only rotating refresh token persisted |
-| Endpoints `/leerlingen/{id}/rooster`, `/huiswerk`, `/cijfers` | `/rest/v1/afspraken`, `/rest/v1/studiewijzeritem*toekenningen`, `/rest/v1/resultaten/huidigVoorLeerling/{id}` |
+| Endpoints `/leerlingen/{id}/rooster`, `/huiswerk`, `/cijfers` | `/rest/v1/afspraken`, `/rest/v1/studiewijzeritem*toekenningen`, `/rest/v1/geldendvoortgangsdossierresultaten/leerling/{id}` (legacy `huidigVoorLeerling` fallback) |
 | `sensor.py` only | `sensor` + `binary_sensor` + `calendar` (future work) |
 | `hass.data[DOMAIN]` implied | `entry.runtime_data` |
 | No pagination | `Range: items=0-99` for grades |

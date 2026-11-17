@@ -72,6 +72,7 @@ def _valid_grades(data: SomTodayData | None) -> list[Grade]:
         if grade.value is not None
         and grade.counts
         and not grade.not_made
+        and not grade.imported
         and not grade.is_average_column
     ]
     grades.sort(key=lambda grade: (_grade_recency(grade), grade.id or ""), reverse=True)
