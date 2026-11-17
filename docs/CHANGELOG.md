@@ -3,6 +3,31 @@
 All notable changes to the SomToday Home Assistant integration are documented
 in this file.
 
+## [0.8.2] - 2026-11-17
+
+### Fixed
+
+- **Structured HTTP status on API errors.** `SomTodayApiError` now carries the
+  response `status`, and the legacy-grade fallback checks `status == 404`
+  instead of matching text in the exception message.
+- **The not-made marker is no longer dropped.** A result whose display value is
+  followed by `"!"` (or `" !"`) is flagged as `not_made`, even when the
+  `bijzonderheid` field is absent, so it is not counted.
+- **A malformed grade payload is non-fatal.** `_async_get_grades` now also
+  catches `TypeError`/`ValueError` from `parse_grades`, keeping the previous
+  snapshot and leaving the schedule/calendar available.
+- **Imported results require a present object.** An empty
+  `resultaatAnderVakKolom` no longer marks a normal grade as imported.
+
+### Changed
+
+- Docs: review follow-up status, the test report (332 tests, 100% line) and the
+  `Grade`/error mapping in `architecture.md`.
+- `manifest.json` bumped to `0.8.2`.
+- Tests: structured error status, non-404 no-fallback, the `"!"` marker,
+  empty/non-empty imported columns, a malformed grade payload and a realistic
+  exam-dossier row.
+
 ## [0.8.1] - 2026-11-17
 
 ### Fixed

@@ -1,4 +1,153 @@
-# Review — SomToday v0.8.0 grades slice
+# Review — SomToday v0.8.1 grade-endpoint fix
+
+> Reviewer: reviewer-agent (per `AGENTS.md`).
+> Date: 2026-11-17.
+> Scope: commit `2a6f185` (**v0.8.1**) plus the tester's uncommitted additions —
+> `api.py` (`GRADES_PATH`, `EXAM_GRADES_PATH`, `LEGACY_GRADES_PATH`,
+> `GRADE_TYPES`, `GRADE_ADDITIONALS`, `GRADE_SORT`, `async_get_grades`,
+> `_grade_params`), `models.py` (`_strip_not_made`, `Grade.imported`,
+> `Grade.from_api`), `sensor.py` (`_valid_grades` imported filter),
+> `manifest.json` 0.8.1, `docs/architecture.md`, `docs/CHANGELOG.md`,
+> `README.md`, `docs/test-report.md`, and the tests in
+> `tests/{test_api,test_models,test_sensor}.py`.
+> Sources of truth: `docs/architecture.md` §5/§5.1/§7.2/§7.3/§8.1/§13,
+> `docs/CHANGELOG.md`, `docs/test-report.md`, and the upstream
+> `elisaado/somtoday-api-docs` payload for
+> `GET /rest/v1/resultaten/huidigVoorLeerling/{id}`.
+> Method: independent re-read of every in-scope file; independent re-run of the
+> suite, coverage and lint; read-through of the upstream grade payload. **No
+> production code or test was modified. No real SomToday API call was made.
+> Nothing was committed.**
+
+## Summary
+
+**Verdict: approve with non-blocking follow-ups.** The v0.8.1 fix is correct
+for the stated endpoint selection rule (dossier primary, legacy only on HTTP
+404, exam only when voortgang is empty), the legacy parser is preserved and the
+new shapes are parsed defensively. **0 blocking issues, 8 non-blocking
+findings** (three medium, five low). Release is safe; the medium findings are
+worth verifying against a real exam-year payload before the next grade change
+(N2, N3, N4).
+
+Commands reproduced independently:
+
+```sh
+V=/var/folders/my/41d2j1d50dg5sc8d603280x40000gn/T/opencode/sometoday-venv/bin
+$V/python -m pytest tests/ -q --cov=custom_components.sometoday --cov-branch \
+  --cov-report=term-missing
+$V/python -m ruff check custom_components tests
+```
+
+Observed: **328 passed, 0 failed, 0 xfailed, 0 skipped**; line coverage
+**100%** (1242 statements, 0 missed); branch coverage **99%** (334 branches, 10
+partial, all pre-existing diagnostic guards); `models.py` 100% line/branch,
+`api.py` 100% line / 99% branch, `sensor.py` 100% line / 97% branch. `ruff`
+reports **9 issues, all pre-existing and all in `tests/`** (6 × `RUF100`,
+2 × `UP017`, 1 × `FURB162`); **no production-code findings**. The uncommitted
+`docs/test-report.md` figures (328 tests, 100% line, 9 ruff findings) match this
+run.
+
+## Follow-up (v0.8.2)
+
+The medium findings and N1/N5 were addressed after this review; the review text
+above is kept as the original record.
+
+| ID | Status | Resolution |
+|----|--------|------------|
+| N1 | Fixed | `SomTodayApiError` now carries a `status`; the grades fallback checks `err.status == 404` instead of matching `"HTTP 404"` in the message. |
+| N2 | Mitigated | The shared query matches the official app's request for both dossiers; a realistic exam-dossier row is now exercised in `test_get_grades_uses_exam_dossier_when_voortgang_is_empty`. Still worth a real exam-year payload check. |
+| N3 | Fixed | `_split_not_made` strips `"!"`/`" !"` and surfaces the signal; `not_made` is set even when `bijzonderheid` is absent. |
+| N4 | Fixed | `_async_get_grades` also catches `TypeError`/`ValueError`, so a malformed grade payload keeps the previous snapshot; covered by a coordinator test. |
+| N5 | Fixed | `_is_present` treats only a non-empty mapping/sequence (or non-empty scalar) as an imported result. |
+| N6 | Open (low) | Capture a real current-shape payload as a fixture when available. |
+| N7 | Open (low) | Only HTTP 404 triggers the legacy fallback, per the stated requirement. |
+| N8 | Open (low) | Verify with exam-year data whether an imported-only row needs merging. |
+
+## Blocking issues
+
+None.
+
+## Non-blocking findings
+
+| ID | Severity | Finding | Location | Recommendation |
+|----|----------|---------|----------|----------------|
+| N1 | Low | The legacy fallback keys off the literal substring `"HTTP 404"` in `str(err)`. It works today because `_async_decode` formats that exact text, but any future message change silently disables the fallback and grades stay unknown on legacy schools. | `api.py:211-221` | Carry the status as data, not text: add `status` to `SomTodayApiError` (set in `_async_decode`) or add a `SomTodayNotFoundError` subclass and catch that. This also makes the 403/429/5xx branches explicit. |
+| N2 | Medium | The exam fallback reuses the voortgang query (`type=Toetskolom,DeeltoetsKolom,Werkstukcijferkolom,Advieskolom`, the same `additional`s and `sort=desc-geldendResultaatCijferInvoer`). Exam-dossier columns can use other `type`/sort fields, in which case the server can return an empty list and the fallback (the reason for reading the exam dossier) never yields a grade. The test only asserts that the request is made with those params, not that real exam rows pass the filter. | `api.py:226-239`, `tests/test_api.py:907-925` | Verify with a real exam-year response. If exam column types differ, use exam-specific `GRADE_TYPES`/`sort` (or omit `type`/`sort` for the exam endpoint) and add a fixture with actual exam rows. |
+| N3 | Medium | `_strip_not_made` removes the `" !"` postfix from `formattedResultaat` but discards the signal. If `bijzonderheid` is absent (only the display value carries the marker), a result the portal flags as not made/no-count is parsed as a normal value and counted. Only the exact `" !"` suffix is handled (`"7,5!"` fails to parse), and the test asserts the value without asserting `not_made`/`counts`. | `models.py:209-213, 426, 436-443` | Confirm what `"!"` means in the current app. If it means not made / not counting, set `not_made`/`counts` from it instead of dropping it; tolerate `"!"` with or without the space and add assertions for both flags. |
+| N4 | Medium | The "grades failure is non-fatal" guarantee is incomplete. `parse_grades` raises `TypeError` for an unexpected payload (e.g. `items` is not a list), and `_async_get_grades` only catches `SomTodayError`/`aiohttp.ClientError`. A malformed grade payload from the new endpoint would propagate and fail the whole coordinator poll, taking the schedule/calendar unavailable. | `coordinator.py:197-206`, `models.py:482-497` | Catch `(SomTodayError, aiohttp.ClientError, TypeError, ValueError)` around the grades fetch (or wrap the parse in `api.py`) and keep the previous snapshot, as the docstring already promises. Add a coordinator test with a malformed `items` value. |
+| N5 | Low | `imported=bool(payload.get("resultaatAnderVakKolom"))` uses truthiness, while the architecture says "is present". A non-empty non-mapping truthy value (e.g. the string `"false"`) would mark a normal grade imported; an empty container is correctly not imported. | `models.py:461`, `docs/architecture.md:676` | Use an explicit check (`isinstance(value, Mapping) and bool(value)`, or `value not in (None, "", [], {})`) and add tests for `{}`/`[]`/`False`. Keep the docs wording in sync. |
+| N6 | Low | The current dossier shape is **not documented upstream**: `somtoday-api-docs` only documents `resultaat`, `geldendResultaat`, `datumInvoer`, `teltNietmee`, `toetsNietGemaakt`, `type` and `vak`. The new fields (`cijfer`, `formattedResultaat`, `bijzonderheid`, `resultaatAnderVakKolom`, `additionalObjects.vaknaam`) are validated only against hand-written fixtures. Also, `type` is read only from the top level; when the app asks for `additional=resultaatkolom`, the column type may live under `additionalObjects.resultaatkolom`, leaving `latest_grade`'s `type` attribute empty for the current shape. | `models.py:408-462`, `tests/test_models.py:694-708` | Capture a sanitised real payload as a fixture and cite its source in `architecture.md`. If `type` is nested in the real shape, read `additionalObjects.resultaatkolom.type` as a fallback (or document that `type` is absent on the current endpoint). |
+| N7 | Low | Only HTTP 404 selects the legacy endpoint. A 400/405/422 caused by an unsupported `sort`/`type`/`additional` query at a school surfaces as a (non-fatal) grades error and never tries the legacy path, so those users keep stale/unknown grades even though the legacy endpoint works. This is consistent with the stated requirement; it is only a compatibility caveat. | `api.py:211-221` | If the real app/portal is known to reject queries at some schools, also treat the verified "unsupported query" statuses as fallback triggers. Do not include 401/403/429. |
+| N8 | Low | Dropping imported rows can hide an exam/SE grade that only appears as an imported column in a non-empty voortgang dossier, because the exam dossier is then not read. The dedupe intent is sound, but the completeness guarantee depends on the original row also existing in the voortgang dossier. | `sensor.py:69-77`, `api.py:223-229` | Verify with exam-year data; if the only row is imported, read the exam dossier and merge/dedupe by id/subject instead of unconditionally dropping imported rows. |
+
+## Security
+
+Pass. The new code adds no secrets and no token logging. The bearer token is
+only placed in the request headers in `_build_headers`; the new debug message
+(`api.py:214-217`) contains only the endpoint name, and the exception messages
+contain only the method/path and student id. `_log_error_summary` remains
+unchanged, is debug-only and bounded, and logs response status/metadata rather
+than request headers, so the token cannot leak through it. No credentials or
+grade data are written to the log in normal operation.
+
+## Home Assistant best practices
+
+- **Coordinator error mapping** is correct: `SomtodayInvalidAuth` →
+  `ConfigEntryAuthFailed`, other `SomTodayError`/network errors → `UpdateFailed`
+  (N4 is the one gap, in the secondary-data path).
+- **Grades are non-fatal** in the intended path: 403/5xx on grades keep the
+  previous snapshot and leave the schedule/calendar available; the old
+  `enable_grades` opt-out is unchanged.
+- **Sensor filtering** is consistent across `average_grade`, `latest_grade` and
+  `grades_count`: all three use `_valid_grades`, which now also excludes
+  imported rows. Filtering semantics are documented in §8.1 and the README.
+- **Pagination** reuses the proven `Range: items=…` walker; 200 (whole list) and
+  206 (partial) are both handled.
+
+## Parser robustness and regression risk
+
+- The legacy shape still parses: `resultaat`, `geldendResultaat`, `datumInvoer`,
+  `teltNietmee`, `toetsNietGemaakt`, top-level `vak` and `*GemiddeldeKolom`
+  filtering are unchanged, and all legacy tests pass. Legacy users are only
+  affected by one extra 404 request per poll before the fallback; no data
+  regression was observed.
+- The current shape is parsed defensively: numeric `cijfer`, a decimal-comma
+  `formattedResultaat` fallback, `additionalObjects.vaknaam`,
+  case-insensitive `bijzonderheid`, `resultaatAnderVakKolom`, and the
+  first-attempt/retake date fallbacks are all covered.
+- The main residual parser risks are N3 (the `"!"` marker), N6 (the current
+  shape is only fixture-validated and `type` may be nested) and N2 (exam rows
+  may not match the voortgang type filter).
+
+## Documentation check
+
+- `README.md` status is **v0.8.1** and the grades section describes the
+  `TeltNietMee`/imported exclusions. Consistent with the code.
+- `docs/CHANGELOG.md` has a complete `[0.8.1] - 2026-11-17` entry that matches
+  the commit (endpoint change, fallbacks, parser fields, imported filter, docs
+  and tests). `manifest.json` is **0.8.1**, matching the README and CHANGELOG.
+- `docs/architecture.md` updates §5, §7.2, §7.3, §8.1 and §13 consistently with
+  the implementation; the endpoint table lists primary, exam and legacy paths
+  correctly.
+- `docs/test-report.md` (uncommitted) matches the reproduced run (328 passed,
+  100% line, 9 pre-existing ruff findings) and documents the new cases.
+- Minor stale references (not blocking): `architecture.md:457` still says the
+  grades slice was implemented in v0.8.0 (the endpoint changed in v0.8.1), and
+  the illustrative `manifest.json` in `architecture.md:938` still shows
+  `"version": "0.7.2"`. Neither affects runtime.
+
+## Verdict
+
+**Approve — with non-blocking follow-ups.** No blocking issues. The endpoint
+selection, fallbacks, parser compatibility and legacy regression behaviour match
+the requirement and are backed by 328 passing tests. Before the next grade
+change, verify N2 (exam query) and N3 (`"!"` semantics) against a real
+exam-year payload, and prefer structured 404 detection (N1) over substring
+matching.
+
+---
+
+# Historical review — SomToday v0.8.0 grades slice
 
 > Reviewer: reviewer-agent (per `AGENTS.md`).
 > Date: 2026-09-13.

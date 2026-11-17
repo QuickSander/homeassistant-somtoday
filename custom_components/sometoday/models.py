@@ -206,11 +206,28 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
-def _strip_not_made(value: Any) -> Any:
-    """Drop the ``" !"`` postfix the portal adds to a missed grade."""
-    if isinstance(value, str) and value.endswith(" !"):
-        return value[:-2]
-    return value
+def _split_not_made(value: Any) -> tuple[Any, bool]:
+    """Return a display value and whether the portal marked it as not made.
+
+    The portal appends ``" !"`` (sometimes ``"!"`` without the space) to a
+    result that was not made. The marker is stripped so the value stays numeric,
+    but the signal is returned instead of being dropped.
+    """
+    if not isinstance(value, str):
+        return value, False
+    stripped = value.rstrip()
+    if not stripped.endswith("!"):
+        return value, False
+    return stripped[:-1].rstrip(), True
+
+
+def _is_present(value: Any) -> bool:
+    """Return whether an optional object is present and non-empty."""
+    if isinstance(value, Mapping):
+        return bool(value)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return bool(value)
+    return value is not None and value is not False and value != ""
 
 
 def _as_text(value: Any) -> str | None:
@@ -423,7 +440,10 @@ class Grade:
         # ``cijfer`` is the current shape; ``geldendResultaat``/``resultaat``
         # are the legacy columns. ``formattedResultaat`` is the display value
         # (``"7,5"``) and is only used when no numeric field is present.
-        formatted = _as_float(_strip_not_made(payload.get("formattedResultaat")))
+        formatted_raw, formatted_not_made = _split_not_made(
+            payload.get("formattedResultaat")
+        )
+        formatted = _as_float(formatted_raw)
         result = _as_float(payload.get("resultaat"))
         if result is None:
             result = formatted
@@ -441,6 +461,9 @@ class Grade:
         else:
             counts = not bool(payload.get("teltNietmee", False))
             not_made = bool(payload.get("toetsNietGemaakt", False))
+        # The display marker is a second, independent signal: a row without the
+        # ``bijzonderheid`` field can still be flagged through ``formatted``.
+        not_made = not_made or formatted_not_made
 
         return cls(
             id=_as_str(grade_id),
@@ -458,7 +481,7 @@ class Grade:
             not_made=not_made,
             # A result imported from another subject (for example an SE grade)
             # would otherwise be counted twice when both dossiers are read.
-            imported=bool(payload.get("resultaatAnderVakKolom")),
+            imported=_is_present(payload.get("resultaatAnderVakKolom")),
         )
 
 

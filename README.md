@@ -4,7 +4,7 @@ A Home Assistant custom component that logs in to [SomToday](https://www.somtoda
 and (eventually) exposes a student's schedule, homework, grades and absence as
 Home Assistant entities.
 
-> **Current status: authentication, schedule and grades (v0.8.1).** This release
+> **Current status: authentication, schedule and grades (v0.8.2).** This release
 > installs, authenticates against SomToday, exposes the student's **timetable as
 > a read-only `calendar` entity**, adds **`first_lesson_of_today`** and
 > **`first_lesson_of_tomorrow`** timestamp sensors (useful for driving an

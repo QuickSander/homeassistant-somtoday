@@ -30,7 +30,16 @@ class SomtodayInvalidAuth(SomTodayAuthError):
 
 
 class SomTodayApiError(SomTodayError):
-    """Raised for unexpected API responses or malformed payloads."""
+    """Raised for unexpected API responses or malformed payloads.
+
+    ``status`` carries the HTTP status when the error came from a response, so
+    callers can branch on it (for example the legacy grades fallback) without
+    matching message text.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class SomTodayRateLimitError(SomTodayApiError):

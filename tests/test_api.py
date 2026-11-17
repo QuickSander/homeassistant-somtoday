@@ -908,17 +908,26 @@ async def test_get_grades_uses_exam_dossier_when_voortgang_is_empty(
     fake_session: Any, fake_response: Any
 ) -> None:
     """An exam-year result that lives only in the exam dossier is returned."""
+    exam_row = {
+        "links": [{"id": 2, "rel": "self"}],
+        "cijfer": 6.4,
+        "formattedResultaat": "6,4",
+        "datumInvoerEerstePoging": "2026-10-02T09:00:00+02:00",
+        "type": "Toetskolom",
+        "bijzonderheid": None,
+        "additionalObjects": {"vaknaam": "Scheikunde", "vakuuid": "vak-uuid"},
+    }
     session = fake_session(
         [
             fake_response(200, json_data={"items": []}),
-            fake_response(200, json_data={"items": [_grade(2)]}),
+            fake_response(200, json_data={"items": [exam_row]}),
         ]
     )
     api, _ = _client(session)
 
     grades = await api.async_get_grades(1234)
 
-    assert grades == [_grade(2)]
+    assert grades == [exam_row]
     assert len(session.calls) == 2
     _, url, kwargs = session.calls[1]
     assert url == f"{API_URL}{EXAM_GRADES_PATH.format(student_id=1234)}"
@@ -978,6 +987,51 @@ async def test_get_grades_403_is_retryable(
         await api.async_get_grades(1234)
 
     assert not isinstance(err.value, SomtodayInvalidAuth)
+    assert err.value.status == 403
+
+
+async def test_get_grades_403_does_not_fall_back(
+    fake_session: Any, fake_response: Any
+) -> None:
+    """Only a 404 selects the legacy endpoint; a 403 must surface."""
+    session = fake_session([fake_response(403)])
+    api, _ = _client(session)
+
+    with pytest.raises(SomTodayApiError):
+        await api.async_get_grades(1234)
+
+    assert len(session.calls) == 1
+    assert LEGACY_GRADES_PATH.format(student_id=1234) not in session.calls[0][1]
+
+
+async def test_get_grades_server_error_does_not_fall_back(
+    fake_session: Any, fake_response: Any
+) -> None:
+    """A 5xx on the dossier endpoint is not retried against the legacy path."""
+    session = fake_session([fake_response(500, text="boom")])
+    api, _ = _client(session)
+
+    with pytest.raises(SomTodayApiError):
+        await api.async_get_grades(1234)
+
+    assert len(session.calls) == 1
+    assert LEGACY_GRADES_PATH.format(student_id=1234) not in session.calls[0][1]
+
+
+async def test_get_grades_populated_voortgang_does_not_read_exam(
+    fake_session: Any, fake_response: Any
+) -> None:
+    """The exam dossier is only read when the voortgang dossier is empty."""
+    session = fake_session(
+        [fake_response(200, json_data={"items": [_grade(1)]})]
+    )
+    api, _ = _client(session)
+
+    grades = await api.async_get_grades(1234)
+
+    assert grades == [_grade(1)]
+    assert len(session.calls) == 1
+    assert EXAM_GRADES_PATH.format(student_id=1234) not in session.calls[0][1]
 
 
 async def test_get_grades_error_status(
@@ -987,8 +1041,10 @@ async def test_get_grades_error_status(
     session = fake_session([fake_response(500, text="oops")])
     api, _ = _client(session)
 
-    with pytest.raises(SomTodayApiError):
+    with pytest.raises(SomTodayApiError) as err:
         await api.async_get_grades(1234)
+
+    assert err.value.status == 500
 
 
 async def test_get_grades_401_refreshes_and_retries(

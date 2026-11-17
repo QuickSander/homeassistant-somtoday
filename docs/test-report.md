@@ -1,32 +1,110 @@
 # Test report — SomToday Home Assistant plugin
 
-## v0.8.1 — Grade endpoint fix (current)
+## v0.8.2 — Review follow-ups (current)
 
-**Component under test:** `api.py` (`async_get_grades`, the dossier/legacy/exam
-paths and `_grade_params`), `models.py` (`Grade.from_api` current shape,
-`bijzonderheid`, `imported`, `_strip_not_made`), `sensor.py` (imported-result
-filter) and the updated `tests/test_api.py` / `tests/test_models.py` /
-`tests/test_sensor.py`.
+**Component under test:** `exceptions.py` (`SomTodayApiError.status`), `api.py`
+(structured 404 detection), `models.py` (`_split_not_made`, `_is_present`,
+`not_made` from the `"!"` marker) and `coordinator.py` (malformed grade payload
+is non-fatal).
 **Date:** 2026-11-17.
 **Environment:** Python 3.14.7, Home Assistant 2026.9.1, pytest 9.x,
 pytest-homeassistant-custom-component, ruff 0.17.5.
-
-All SomToday HTTP is mocked; the real API is never contacted.
 
 ### Summary
 
 | Metric | Value |
 |--------|-------|
-| Tests collected | **321** |
-| Passed | **321** |
+| Tests collected | **332** |
+| Passed | **332** |
+| Failed | **0** |
+| Line coverage (whole integration) | **100%** (1256 statements, 0 missed) |
+| `ruff check custom_components` | **clean** |
+
+New cases: structured `status` on 403/5xx, no fallback for non-404 statuses,
+non-empty vs empty `resultaatAnderVakKolom`, the `"!"` not-made marker (with and
+without the space, and bare), and a malformed grade payload that keeps the
+previous snapshot.
+
+## v0.8.1 — Grade endpoint fix
+
+**Component under test:** `api.py` (`async_get_grades`, the dossier/legacy/exam
+paths and `_grade_params`), `models.py` (`Grade.from_api` current shape,
+`bijzonderheid`, `imported`, `_split_not_made`), `sensor.py` (imported-result
+filter) and the updated `tests/test_api.py` / `tests/test_models.py` /
+`tests/test_sensor.py`.
+**Date:** 2026-11-17.
+**Tester:** tester-agent (validation run).
+**Environment:** Python 3.14.7, Home Assistant 2026.9.1, pytest 9.x,
+pytest-homeassistant-custom-component, ruff 0.17.5.
+
+All SomToday HTTP is mocked (`FakeSession` / `FakeResponse`); the real API is
+never contacted.
+
+### Summary
+
+| Metric | Value |
+|--------|-------|
+| Tests collected | **328** |
+| Passed | **328** |
 | Failed | **0** |
 | Line coverage (whole integration) | **100%** (1242 statements, 0 missed) |
+| `api.py` coverage | **100%** (186 statements) |
+| `models.py` coverage | **100%** (333 statements) |
+| `sensor.py` coverage | **100%** (167 statements) |
 
-New cases: the dossier endpoint query and `Range` header, the legacy
-`huidigVoorLeerling` fallback on HTTP 404, the exam-dossier fallback when the
-voortgang dossier is empty, the current result shape (`cijfer`,
-`formattedResultaat`, `additionalObjects.vaknaam`, `bijzonderheid`,
-`resultaatAnderVakKolom`) and the imported-result sensor filter.
+### Test cases (v0.8.1)
+
+The fix's own tests cover the dossier query (`type`, `additional`, `sort`), the
+`Range` header and two-page pagination, the legacy fallback on HTTP 404, the
+exam fallback when voortgang is empty, the current result shape
+(`cijfer`, `formattedResultaat`, `additionalObjects.vaknaam`), `bijzonderheid`
+and `imported`. This validation run added focused cases for the remaining
+edges:
+
+| Test | Goal | Result |
+|------|------|--------|
+| `test_get_grades_403_does_not_fall_back` | A 403 stays retryable and does not select the legacy endpoint | PASS |
+| `test_get_grades_server_error_does_not_fall_back` | A 5xx surfaces instead of trying the legacy endpoint | PASS |
+| `test_get_grades_populated_voortgang_does_not_read_exam` | The exam dossier is only read when voortgang is empty | PASS |
+| `test_parse_grade_imported_result_without_column_is_false` | A `None` import column is not treated as imported | PASS |
+| `test_parse_grade_bijzonderheid_is_case_insensitive` | `teltnietmee` / `nietgemaakt` markers are case-insensitive | PASS |
+| `test_parse_grade_bijzonderheid_and_imported_are_independent` | `TeltNietMee` and `resultaatAnderVakKolom` set separate flags | PASS |
+| `test_latest_grade_skips_imported_results` | An imported row never becomes the latest grade | PASS |
+
+The existing `test_average_grade_excludes_imported_results` also proves no
+duplicate counting: an imported row is excluded from both the average and the
+grade count.
+
+### Findings
+
+- Fallback selection is correct: only HTTP 404 selects
+  `resultaten/huidigVoorLeerling`; 401 still refreshes once, and 403/5xx remain
+  retryable errors without a legacy request.
+- The exam dossier is read only after a successful, empty voortgang response. A
+  populated voortgang dossier makes exactly one request.
+- `bijzonderheid` wins over the legacy `teltNietmee` / `toetsNietGemaakt`
+  fields when present, is case-insensitive, and combines independently with the
+  imported flag.
+- Imported results are filtered from the average, count and latest sensors, so
+  a result imported from another subject is not counted twice.
+
+### Lint
+
+`ruff check custom_components tests` reports **9 pre-existing issues**, none in
+the lines added by v0.8.1 or by this validation run: five `RUF100` unused
+`noqa: DTZ001` directives (`tests/test_calendar.py`,
+`tests/test_coordinator.py`), plus `UP017` / `FURB162` / `RUF100` in
+`tests/test_sensor.py` outside the grade section. No production code findings.
+
+### Concerns / blockers
+
+- **Non-blocking:** the fallback keys off the substring `"HTTP 404"` in the
+  exception text. It works today but is brittle if the error wording changes.
+- **Non-blocking:** if a *later* page of the voortgang endpoint returns 404, the
+  whole request falls back to legacy and the already-fetched primary pages are
+  discarded. Not observed with a real API; flagged for awareness.
+- No blockers. The real API is never called, so parser compatibility is
+  validated against the recorded payload shapes only.
 
 ## v0.8.0 — Grades slice
 

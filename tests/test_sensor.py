@@ -691,6 +691,21 @@ async def test_average_grade_excludes_imported_results(hass: Any) -> None:
     assert SomTodayGradesCountSensor(coordinator, entry).native_value == 1
 
 
+async def test_latest_grade_skips_imported_results(hass: Any) -> None:
+    """An imported result never becomes the latest grade, even when newer."""
+    grades = [
+        _grade(7.0, grade_id="1", day=_day(1)),
+        _grade(9.0, grade_id="2", day=_day(9), imported=True),
+    ]
+    coordinator, entry = _coordinator(hass, grades=grades)
+    entity = SomTodayLatestGradeSensor(coordinator, entry)
+
+    assert entity.native_value == 7.0
+    attributes = entity.extra_state_attributes
+    assert attributes is not None
+    assert attributes["date"] == _day(1).isoformat()
+
+
 async def test_average_grade_no_grades_returns_none(hass: Any) -> None:
     """Without usable grades the state and attributes are empty."""
     coordinator, entry = _coordinator(hass, grades=[])

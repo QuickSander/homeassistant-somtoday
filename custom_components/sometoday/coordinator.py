@@ -199,7 +199,9 @@ class SomTodayDataUpdateCoordinator(DataUpdateCoordinator[SomTodayData]):
             return parse_grades(payload)
         except SomtodayInvalidAuth:
             raise
-        except (SomTodayError, aiohttp.ClientError) as err:
+        except (SomTodayError, aiohttp.ClientError, TypeError, ValueError) as err:
+            # ``parse_grades`` raises TypeError/ValueError for a payload that is
+            # not a list; that must stay non-fatal like an HTTP failure.
             _LOGGER.debug("Could not refresh the SomToday grades: %s", err)
             if self.data is not None:
                 return list(self.data.grades)

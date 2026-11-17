@@ -524,6 +524,10 @@ SomTodayDataUpdateCoordinator(DataUpdateCoordinator[SomTodayData])
 HA's coordinator already applies exponential backoff after repeated
 `UpdateFailed`s; no custom backoff is needed.
 
+`SomTodayApiError` carries a `status` attribute when the error came from an
+HTTP response. The grades client uses it to select the legacy endpoint on a
+`404`; message text is not parsed.
+
 ## 6. API client
 
 `api.py` — `SomTodayApiClient`, constructed with an **injectable session** so
@@ -672,8 +676,8 @@ This mapping is normative for the `models.py` parsers.
 | | `type` | `type` |
 | | `subject` | `vak.naam`, else `additionalObjects.vak.naam`, else `additionalObjects.vaknaam` |
 | | `subject_abbr` | `vak.afkorting` (fallback `additionalObjects.vak.afkorting`) |
-| | `not_made` | `bijzonderheid == "NietGemaakt"` (legacy: `toetsNietGemaakt`) |
-| | `imported` | `resultaatAnderVakKolom` is present |
+| | `not_made` | `bijzonderheid == "NietGemaakt"` (legacy: `toetsNietGemaakt`), or the display value ends in `"!"` |
+| | `imported` | `resultaatAnderVakKolom` is present and non-empty |
 | `HomeworkItem` | `id` | `links[0].id` |
 | | `topic` | `studiewijzerItem.onderwerp` |
 | | `kind` | `studiewijzerItem.huiswerkType` |

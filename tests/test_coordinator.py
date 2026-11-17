@@ -341,6 +341,34 @@ async def test_update_data_grades_failure_without_snapshot(hass: Any) -> None:
     assert data.grades == []
 
 
+async def test_update_data_malformed_grades_keep_the_previous_snapshot(
+    hass: Any,
+) -> None:
+    """A malformed grade payload is non-fatal, like an HTTP failure."""
+    previous = Grade(
+        id="1",
+        result=7.9,
+        valid_result=7.9,
+        date=None,
+        counts=True,
+        type="Toetskolom",
+        subject="Wiskunde",
+        subject_abbr="WI",
+    )
+    coordinator, _, api, _ = _coordinator(hass, students=[])
+    coordinator.data = SomTodayData(
+        schedule=[],
+        students=[],
+        grades=[previous],
+        updated_at=dt_util.utcnow(),
+    )
+    api.async_get_grades.return_value = {"items": "not-a-list"}
+
+    data = await coordinator._async_update_data()
+
+    assert data.grades == [previous]
+
+
 async def test_update_data_grades_invalid_auth_escalates(hass: Any) -> None:
     """A definitive rejection while reading grades still triggers reauth."""
     coordinator, _, api, _ = _coordinator(hass)

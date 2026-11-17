@@ -738,6 +738,48 @@ def test_parse_grade_formatted_result_is_a_fallback() -> None:
 
     assert grade is not None
     assert grade.value == 7.5
+    # The display marker also flags the row as not made, independently of
+    # ``bijzonderheid``.
+    assert grade.not_made is True
+
+
+def test_parse_grade_not_made_marker_without_space() -> None:
+    """The ``"!"`` marker is tolerated with or without the space."""
+    grade = parse_grade(
+        {**CURRENT_GRADE_PAYLOAD, "cijfer": None, "formattedResultaat": "7,5!"}
+    )
+
+    assert grade is not None
+    assert grade.value == 7.5
+    assert grade.not_made is True
+
+
+def test_parse_grade_marker_only_is_no_value() -> None:
+    """A bare marker yields no value and flags the row as not made."""
+    grade = parse_grade(
+        {**CURRENT_GRADE_PAYLOAD, "cijfer": None, "formattedResultaat": " !"}
+    )
+
+    assert grade is not None
+    assert grade.value is None
+    assert grade.not_made is True
+
+
+def test_parse_grade_imported_requires_a_present_object() -> None:
+    """An empty ``resultaatAnderVakKolom`` does not mark a row imported."""
+    empty = parse_grade({**CURRENT_GRADE_PAYLOAD, "resultaatAnderVakKolom": {}})
+    empty_list = parse_grade({**CURRENT_GRADE_PAYLOAD, "resultaatAnderVakKolom": []})
+    present = parse_grade(
+        {**CURRENT_GRADE_PAYLOAD, "resultaatAnderVakKolom": {"vak": {"naam": "AK"}}}
+    )
+    present_list = parse_grade(
+        {**CURRENT_GRADE_PAYLOAD, "resultaatAnderVakKolom": ["AK"]}
+    )
+
+    assert empty is not None and empty.imported is False
+    assert empty_list is not None and empty_list.imported is False
+    assert present is not None and present.imported is True
+    assert present_list is not None and present_list.imported is True
 
 
 def test_parse_grade_bijzonderheid_telt_niet_mee() -> None:
@@ -766,6 +808,43 @@ def test_parse_grade_imported_result_is_flagged() -> None:
 
     assert grade is not None
     assert grade.imported is True
+
+
+def test_parse_grade_imported_result_without_column_is_false() -> None:
+    """A ``None`` import column does not mark an ordinary result as imported."""
+    grade = parse_grade({**CURRENT_GRADE_PAYLOAD, "resultaatAnderVakKolom": None})
+
+    assert grade is not None
+    assert grade.imported is False
+
+
+def test_parse_grade_bijzonderheid_is_case_insensitive() -> None:
+    """The dossier markers are matched regardless of their casing."""
+    not_counted = parse_grade(
+        {**CURRENT_GRADE_PAYLOAD, "bijzonderheid": "teltnietmee"}
+    )
+    not_made = parse_grade(
+        {**CURRENT_GRADE_PAYLOAD, "bijzonderheid": "nietgemaakt"}
+    )
+
+    assert not_counted is not None and not_counted.counts is False
+    assert not_made is not None and not_made.not_made is True
+
+
+def test_parse_grade_bijzonderheid_and_imported_are_independent() -> None:
+    """A non-counting imported row keeps both flags instead of one overriding."""
+    grade = parse_grade(
+        {
+            **CURRENT_GRADE_PAYLOAD,
+            "bijzonderheid": "TeltNietMee",
+            "resultaatAnderVakKolom": {"vak": {"naam": "AK"}},
+        }
+    )
+
+    assert grade is not None
+    assert grade.counts is False
+    assert grade.imported is True
+    assert grade.not_made is False
 
 
 def test_parse_grade_reads_subject_from_nested_additional_objects() -> None:

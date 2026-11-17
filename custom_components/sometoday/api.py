@@ -209,7 +209,7 @@ class SomTodayApiClient:
                 params=params,
             )
         except SomTodayApiError as err:
-            if "HTTP 404" not in str(err):
+            if err.status != 404:
                 raise
             _LOGGER.debug(
                 "SomToday grades endpoint is unavailable; using the legacy "
@@ -403,17 +403,20 @@ class SomTodayApiClient:
                 # cannot see this endpoint) — retryable, never reauth.
                 await self._log_error_summary(response, method, path)
                 raise SomTodayApiError(
-                    f"SomToday denied access to {method} {path} (HTTP 403)"
+                    f"SomToday denied access to {method} {path} (HTTP 403)",
+                    status=status,
                 )
             if status == 429:
                 await self._log_error_summary(response, method, path)
                 raise SomTodayRateLimitError(
-                    f"SomToday rate limited the {method} {path} request (HTTP 429)"
+                    f"SomToday rate limited the {method} {path} request (HTTP 429)",
+                    status=status,
                 )
             if status >= 400:
                 await self._log_error_summary(response, method, path)
                 raise SomTodayApiError(
-                    f"The {method} {path} request returned HTTP {status}"
+                    f"The {method} {path} request returned HTTP {status}",
+                    status=status,
                 )
 
             try:
